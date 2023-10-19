@@ -134,35 +134,6 @@
 // TODO:
 //
 // Method of learning new WiZmote remotes, maybe when the moon key is pressed 5 times within x sec?
-//
-// Possibly ony generate random activation times once per activation, current method biases early activation
-//
-// Standby:
-//   audio track loops
-//   front white leds candle flicker
-//   front red leds at 30%
-//   inside red leds "breathe" between 30% and 70% brightness
-//   (might have motor pulse every now and again to move the lid up and down havent decided)
-
-// Activated:
-//   all lights go dark
-//   activation track plays
-
-// If Lid open:
-//   motor to pulse until the lid is shut
-
-// Inputs
-//   Mode switch - stop|auto|growl only|random activation
-//   PIR sensor
-//   Lid switch (to detect the lid is down)
-
-// Outputs
-//   Smoke machine
-//   Motor (to make the lid jump)
-//   Audio trigger - standby track (growling) Activation Track
-//   Front LED strip Red and White (run from a digital led mosfet)
-//   Internal LED Strip red and white (run from a digital mosfet)
-
 
 
 // Globals
@@ -186,6 +157,8 @@ bool activatedState = false;
 volatile bool PIRDetected = false;
 volatile long lastActivationTime = 0;
 long lastDeactivationTime = 0;
+long randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
+long randomStopTime = random(RANDOM_STOP_MIN, RANDOM_STOP_MAX);
 
 // Audio
 DFRobot_DF1201S DF1201S;
@@ -241,8 +214,9 @@ bool checkActivatedState() {
         return false;
       }
     } else if (currentMode == Random) {
-      if (millis() - lastActivationTime > random(RANDOM_STOP_MIN, RANDOM_STOP_MAX)) {
+      if (millis() - lastActivationTime > randomStopTime) {
         lastDeactivationTime = millis();
+        randomStopTime = random(RANDOM_STOP_MIN, RANDOM_STOP_MAX);
         return false;
       }
     }
@@ -251,8 +225,9 @@ bool checkActivatedState() {
    
   // Should Activate?
   if (currentMode == Random) {
-    if (millis() - lastDeactivationTime > random(RANDOM_START_MIN, RANDOM_START_MAX)) {
+    if (millis() - lastDeactivationTime > randomStartTime) {
       lastActivationTime = millis();
+      randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
       return true;
     }
   }
@@ -387,6 +362,10 @@ void loop() {
 
     }
 
+
+    // if (digitalRead(LID_PIN) == HIGH) {
+    //   // Lid open
+    // }
 
     // ledcWrite(MOTOR_PWM_CHANNEL, 0);
 

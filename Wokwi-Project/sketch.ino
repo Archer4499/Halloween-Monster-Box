@@ -1,9 +1,36 @@
+// Inputs
+//   Mode switch - stop|auto|growl only|random activation
+//   PIR sensor
+//   Lid switch (to detect the lid is down)
+
+// Outputs
+//   Smoke machine
+//   Motor (to make the lid jump)
+//   Audio trigger - standby track (growling) Activation Track
+//   Front LED strip Red and White (run from a digital led mosfet)
+//   Internal LED Strip red and white (run from a digital mosfet)
+
+// Standby:
+//   audio track loops
+//   front white leds candle flicker
+//   front red leds at 30%
+//   inside red leds "breathe" between 30% and 70% brightness
+//   (might have motor pulse every now and again to move the lid up and down havent decided)
+
+// Activated:
+//   all lights go dark
+//   activation track plays
+
+// If Lid open:
+//   motor to pulse until the lid is shut
+
+
 ////////    Config    ////////
 
 //// Constants/Settings ////
 #define DEBUG    // Print debug lines to serial, comment out to disable
 
-#define LOOP_TIME 500  // Time in milliseconds between logic loops
+#define LOOP_TIME 50  // Time in milliseconds between animation loops
 
 // Random Mode
 #define RANDOM_START_MIN 10000  // Minimum time before random mode could activate
@@ -38,9 +65,9 @@
 // LEDs
 #define NUM_LED_BOARDS 2
 // Orders of the LED boards and strip wiring
-#define LED_FRONT_INDEX 0
+#define LED_FRONT_INDEX  0
 #define LED_INSIDE_INDEX 1
-#define LED_RED_INDEX 0
+#define LED_RED_INDEX   0
 #define LED_WHITE_INDEX 1
 
 // Remote
@@ -155,7 +182,8 @@ enum ActivationMode {
 };
 ActivationMode currentMode = Auto;
 
-volatile bool activated = false;
+bool activatedState = false;
+volatile bool PIRDetected = false;
 volatile long lastActivationTime = 0;
 long lastDeactivationTime = 0;
 
@@ -170,14 +198,11 @@ CRGB leds[NUM_LED_BOARDS];
 
 
 void IRAM_ATTR PIRInterrupt() {
-  if (currentMode == Auto || currentMode == GrowlOnly) {
-    activated = true;
-    lastActivationTime = millis();
-  }
+  PIRDetected = true;
 }
 
 void ledsOff() {
-  leds[LED_FRONT_INDEX] = CRGB(0, 0, 0);
+  leds[LED_FRONT_INDEX] =  CRGB(0, 0, 0);
   leds[LED_INSIDE_INDEX] = CRGB(0, 0, 0);
   FastLED.show();
 }
@@ -195,6 +220,44 @@ ActivationMode readMode() {
     result = Random;
   }
   return result;
+}
+
+bool checkActivatedState() {
+  // PIRDetected is always set back to false so if it's true then we know it is a new activation
+  if (PIRDetected) {
+    PIRDetected = false;
+    // Test for if we actually care about the activation
+    if (currentMode == Auto) {
+      lastActivationTime = millis();
+      return true;
+    }
+  }
+
+  if (activatedState) {
+    // Should deactivate?
+    if (currentMode == Auto) {
+      if (millis() - lastActivationTime > PIR_TIMEOUT) {
+        lastDeactivationTime = millis();
+        return false;
+      }
+    } else if (currentMode == Random) {
+      if (millis() - lastActivationTime > random(RANDOM_STOP_MIN, RANDOM_STOP_MAX)) {
+        lastDeactivationTime = millis();
+        return false;
+      }
+    }
+    return true;
+  }
+   
+  // Should Activate?
+  if (currentMode == Random) {
+    if (millis() - lastDeactivationTime > random(RANDOM_START_MIN, RANDOM_START_MAX)) {
+      lastActivationTime = millis();
+      return true;
+    }
+  }
+
+  return false;
 }
 
 
@@ -244,23 +307,10 @@ void setup() {
 #endif
 
   // Front LEDs Red/White + Internal LEDs red/white
-  FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
-  // FastLED.addLeds<P9813, LED_DATA_PIN, LED_CLK_PIN>(leds, NUM_LED_BOARDS);
-
-
+  // FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
+  FastLED.addLeds<P9813, LED_DATA_PIN, LED_CLK_PIN>(leds, NUM_LED_BOARDS);
 }
 
-// Inputs
-//   Mode switch - stop|auto|growl only|random activation
-//   PIR sensor
-//   Lid switch (to detect the lid is down)
-
-// Outputs
-//   Smoke machine
-//   Motor (to make the lid jump)
-//   Audio trigger - standby track (growling) Activation Track
-//   Front LED strip Red and White (run from a digital led mosfet)
-//   Internal LED Strip red and white (run from a digital mosfet)
 
 void loop() {
   // Check what state we should be in from the switch
@@ -269,7 +319,8 @@ void loop() {
     // Mode changed, so reset and setup anything the new mode needs
     currentMode = newMode;
 
-    activated = false;
+    activatedState = false;
+    PIRDetected = false;
     lastDeactivationTime = millis();
 
     if (newMode == Stop) {
@@ -289,57 +340,43 @@ void loop() {
     }
   }
 
-// Standby:
-//   audio track loops
-//   front white leds candle flicker
-//   front red leds at 30%
-//   inside red leds "breathe" between 30% and 70% brightness
-//   (might have motor pulse every now and again to move the lid up and down havent decided)
-
-// Activated:
-//   all lights go dark
-//   activation track plays
-
-// If Lid open:
-//   motor to pulse until the lid is shut
-
   if (currentMode != Stop) {
-    if (activated) {
-      // TODO: only run once
-      ledsOff();
+    bool newActivatedState = checkActivatedState();
 
-      if (audioInit) {
-        DF1201S.setPlayMode(DF1201S.SINGLE);
-        DF1201S.playSpecFile(ACTIVATION_TRACK);
-        // Maybe needs this start command?
-        // DF1201S.start();
-      }
+    if (newActivatedState != activatedState) {
+      // State changed, so do one time actions that the new state needs
+      activatedState = newActivatedState;
+      
+      if (newActivatedState) {
+        // On activation actions
+        ledsOff();
 
-      // Should deactivate?
-      if (currentMode == Auto) {
-        if (millis() - lastActivationTime > PIR_TIMEOUT) {
-          activated = false;
-          lastDeactivationTime = millis();
+        if (audioInit) {
+          DF1201S.setPlayMode(DF1201S.SINGLE);
+          DF1201S.playSpecFile(ACTIVATION_TRACK);
+          // Maybe needs this start command?
+          // DF1201S.start();
         }
-      } else if (currentMode == Random) {
-        if (millis() - lastActivationTime > random(RANDOM_STOP_MIN, RANDOM_STOP_MAX)) {
-          activated = false;
-          lastDeactivationTime = millis();
+      } else {
+        // On standby actions
+        if (audioInit) {
+          DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
+          DF1201S.playSpecFile(STANDBY_TRACK);
+          // Maybe needs this start command?
+          // DF1201S.start();
         }
+        
+        leds[LED_FRONT_INDEX][LED_RED_INDEX] = 255*0.3;  // 30%
       }
+    }
+
+    // Do the continuous actions such as animations
+    if (activatedState) {
+      // Activated loop
+      
     } else {
       // Standby loop
-      // TODO: only run once
-      if (audioInit) {
-        DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
-        DF1201S.playSpecFile(STANDBY_TRACK);
-        // Maybe needs this start command?
-        // DF1201S.start();
-      }
-      
-      leds[LED_FRONT_INDEX][LED_RED_INDEX] = 255*0.3;  // 30%
-      
-      // Loop
+
       // TODO: Candle filcker
       leds[LED_FRONT_INDEX][LED_WHITE_INDEX] = 200;
       // TODO: Breathe
@@ -348,14 +385,6 @@ void loop() {
       leds[LED_INSIDE_INDEX][LED_WHITE_INDEX] = random(255);
       FastLED.show();
 
-
-      // Should Activate?
-      if (currentMode == Random) {
-        if (millis() - lastDeactivationTime > random(RANDOM_START_MIN, RANDOM_START_MAX)) {
-          activated = true;
-          lastActivationTime = millis();
-        }
-      }
     }
 
 

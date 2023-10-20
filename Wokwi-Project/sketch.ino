@@ -51,16 +51,14 @@
 // The code is using a bit depth of 10
 // Not sure what frequency is best for the motor, 16-20kHz is claimed to reduce noise, but it might not handle high frequencies and the mosfet might run hot
 #define MOTOR_PWM_FREQ 16000
-#define MOTOR_PWM_CHANNEL 0    // Only matters if using other PWM channels as well
 
 // Audio
 #define AUDIO                  // Enable the DFPlayer Pro audio player, comment out to disable
-#define AUDIO_VOLUME 15        // 0-30
+#define AUDIO_VOLUME 15        // Integer: 0-30
 // Audio tracks can by any of MP3, WAV, WMA, FLAC, AAC, APE formats
 // Stored on the DFPlayer Pro from its USB port
 #define ACTIVATION_TRACK "activation_track.wav"
 #define STANDBY_TRACK "standby_track.wav"
-#define DF1201SSerial Serial2  // Serial 2 is the only completely unused one on ESP32
 
 // LEDs
 #define NUM_LED_BOARDS 2
@@ -71,8 +69,19 @@
 #define LED_WHITE_INDEX 1
 
 // Remote
-#define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
+// #define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
                     //  https://www.wizconnected.com/en-us/p/accessory-wizmote/046677603595
+// WIZMOTE_BUTTON_ON           On
+// WIZMOTE_BUTTON_OFF          Off
+// WIZMOTE_BUTTON_NIGHT        Disable Activation (OnlyGrowl)
+// WIZMOTE_BUTTON_ONE          Auto (PIR activation)
+// WIZMOTE_BUTTON_TWO          Random activation
+//  These two aren't intuitive:
+// WIZMOTE_BUTTON_THREE        ? (Maybe trigger activation?) 
+// WIZMOTE_BUTTON_FOUR         ? (Maybe toggle brightness/volume?)
+
+// WIZMOTE_BUTTON_BRIGHT_UP    Led brightness/Volume? up
+// WIZMOTE_BUTTON_BRIGHT_DOWN  Led brightness/Volume? down
 ////////
 
 //// Pins ////
@@ -106,17 +115,17 @@
 #define LID_PIN    32
 
 // Outputs:
-//   Digital Out  - Smoke machine
+//   Digital Out - Smoke machine
 #define SMOKE_PIN    21
 
-//   PWM          - Motor
+//   PWM         - Motor
 #define MOTOR_PIN    22
 
-//   UART         - Audio
+//   UART        - Audio
 #define AUDIO_RX_PIN 16  // RX2
 #define AUDIO_TX_PIN 17  // TX2
 
-//   P9813(1 PWM) - Front LEDs Red/White + Internal LEDs red/white
+//   P9813(SPI)  - Front LEDs Red/White + Internal LEDs red/white
 #define FASTLED_ALL_PINS_HARDWARE_SPI  // Use hardware SPI. This will be on pins 23(Data) and 18(Clk) unless the next line is also uncommented
 // #define FASTLED_ESP32_SPI_BUS HSPI  // Uncomment to use hardware SPI on pins 13(Data) and 14(Clk) instead
 // Changing these 2 pin defines doesn't do anything when using hardware SPI
@@ -128,15 +137,11 @@
 
 // Imports
 #include <FastLED.h>
+#include <HardwareSerial.h>
 #include <DFRobot_DF1201S.h>
 ////
 
-// TODO:
-//
-// Method of learning new WiZmote remotes, maybe when the moon key is pressed 5 times within x sec?
-
-
-// Globals
+// Constants / Globals
 #ifdef DEBUG
   #define DEBUG_PRINT(x)   Serial.print (x)
   #define DEBUG_PRINTLN(x) Serial.println (x)
@@ -144,6 +149,9 @@
   #define DEBUG_PRINT(x)
   #define DEBUG_PRINTLN(x) 
 #endif
+
+#define MOTOR_PWM_CHANNEL 0    // Only matters if using other PWM channels as well
+
 
 enum ActivationMode {
   Stop,
@@ -161,6 +169,7 @@ long randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
 long randomStopTime = random(RANDOM_STOP_MIN, RANDOM_STOP_MAX);
 
 // Audio
+HardwareSerial DF1201SSerial(2);
 DFRobot_DF1201S DF1201S;
 bool audioInit = false;
 

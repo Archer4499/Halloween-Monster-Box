@@ -20,9 +20,44 @@
 // Activated:
 //   all lights go dark
 //   activation track plays
+//   Then synced to the audio:
+//    Red fade in/out
+//    White fade in/out
+//    Flickers red
+//    Flickers white
+//    Motor and smoke activates
+//    Flickers between red/white
+//    Wait until 10 sec point
+//    Goes dark/motor and smoke stops
+//    Run motor slowly until lid is closed
+//    Wait
+//    Little red flickers
+//   Deactivate as the audio ends
 
-// If Lid open:
-//   motor to pulse until the lid is shut
+// Activated: (internal leds only)
+//   all lights go dark
+//   activation track plays
+//   Then synced to the audio:
+//    0sec to 1sec Red fade in/out (monster is Red)
+//    1-1.5sec White fade in/out (cat is white)
+//    strobe red 1.5sec
+//    strobe white 1.5sec
+//    strobe white and red + Motor and smoke activates
+//    Wait until 10 sec point
+//    white to full then fade out over 800ms
+//    Goes dark/motor and smoke stops
+//    Run motor slowly until lid is closed
+//    Wait
+//    Little red flickers
+//   Deactivate as the audio ends
+
+// TODO:
+//
+// Pushbuttons for the mode select (with debounce)
+// Change order of buttons stop(red)|auto(green)|random activation (white)|growl only(blue)
+// LED to show the mode status
+// 
+
 
 
 ////////    Config    ////////
@@ -30,7 +65,7 @@
 //// Constants/Settings ////
 #define DEBUG    // Print debug lines to serial, comment out to disable
 
-#define LOOP_TIME 50  // Time in milliseconds between animation loops
+#define LOOP_TIME 20  // Time in milliseconds between animation loops
 
 // Random Mode
 #define RANDOM_START_MIN 10000  // Minimum time before random mode could activate
@@ -51,6 +86,8 @@
 // The code is using a bit depth of 10
 // Not sure what frequency is best for the motor, 16-20kHz is claimed to reduce noise, but it might not handle high frequencies and the mosfet might run hot
 #define MOTOR_PWM_FREQ 16000
+#define MOTOR_NORMAL_SPEED 4095  // Integer 0-4095
+#define MOTOR_SLOW_SPEED 3000  // Integer 0-4095
 
 // Audio
 #define AUDIO                  // Enable the DFPlayer Pro audio player, comment out to disable
@@ -62,11 +99,26 @@
 
 // LEDs
 #define NUM_LED_BOARDS 2
-// Orders of the LED boards and strip wiring
+// Order of the LED boards
 #define LED_FRONT_INDEX  0
 #define LED_INSIDE_INDEX 1
+// Order of the strip wiring to the RGB on each board
 #define LED_RED_INDEX   0
 #define LED_WHITE_INDEX 1
+
+#define PERCENT(x) static_cast<uint8_t>(x * 255/100)
+
+// LED Effects
+#define GLOW_RED_BRIGHTNESS PERCENT(30)
+
+#define CANDLE_BRIGHTNESS   PERCENT(70)
+#define CANDLE_INTERVAL     400
+#define CANDLE_INTENSITY    0.07f
+#define CANDLE_ALPHA        PERCENT(90)
+
+#define BREATHING_MIN       PERCENT(30)
+#define BREATHING_MAX       PERCENT(70)
+#define BREATHING_INTERVAL  5000
 
 // Remote
 // #define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
@@ -77,11 +129,11 @@
 // WIZMOTE_BUTTON_ONE          Auto (PIR activation)
 // WIZMOTE_BUTTON_TWO          Random activation
 //  These two aren't intuitive:
-// WIZMOTE_BUTTON_THREE        ? (Maybe trigger activation?) 
-// WIZMOTE_BUTTON_FOUR         ? (Maybe toggle brightness/volume?)
+// WIZMOTE_BUTTON_THREE        Trigger smoke
+// WIZMOTE_BUTTON_FOUR         Trigger activation
 
-// WIZMOTE_BUTTON_BRIGHT_UP    Led brightness/Volume? up
-// WIZMOTE_BUTTON_BRIGHT_DOWN  Led brightness/Volume? down
+// WIZMOTE_BUTTON_BRIGHT_UP    Volume up   (Or Led brightness)
+// WIZMOTE_BUTTON_BRIGHT_DOWN  Volume down (Or Led brightness)
 ////////
 
 //// Pins ////
@@ -175,18 +227,20 @@ bool audioInit = false;
 
 // LEDS
 CRGB leds[NUM_LED_BOARDS];
+struct ledInternal {
+  CRGB initial;
+  CRGB current;
+  CRGB target;
+  long startTimes[3];
+  long durations[3];
+};
+ledInternal ledsInternal[NUM_LED_BOARDS];
 
 ////
 
 
 void IRAM_ATTR PIRInterrupt() {
   PIRDetected = true;
-}
-
-void ledsOff() {
-  leds[LED_FRONT_INDEX] =  CRGB(0, 0, 0);
-  leds[LED_INSIDE_INDEX] = CRGB(0, 0, 0);
-  FastLED.show();
 }
 
 ActivationMode readMode() {
@@ -244,6 +298,71 @@ bool checkActivatedState() {
   return false;
 }
 
+float random_float() {
+  return static_cast<float>(random(UINT32_MAX-1)) / static_cast<float>(UINT32_MAX);
+}
+
+inline static float random_cubic_float() {
+  const float r = random_float() * 2.0f - 1.0f;
+  return r * r * r;
+}
+
+bool ledCurrentlyFading(int boardIndex) {
+  return (ledsInternal[boardIndex].current != ledsInternal[boardIndex].target);
+}
+
+bool ledCurrentlyFading(int boardIndex, int ledIndex) {
+  return (ledsInternal[boardIndex].current[ledIndex] != ledsInternal[boardIndex].target[ledIndex]);
+}
+
+void ledProcessFades() {
+  long currTime = millis();
+
+  for (int i = 0 ; i < NUM_LED_BOARDS; i++) {
+    // CRGB newColour = leds[i];
+    for (int j = 0 ; j < 3; j++) {
+      if (ledCurrentlyFading(i, j)) {
+        uint8_t initial = ledsInternal[i].initial[j];
+        // uint8_t current = ledsInternal[i].current[j];
+        uint8_t target  = ledsInternal[i].target[j];
+        long startTime  = ledsInternal[i].startTimes[j];
+        long duration   = ledsInternal[i].durations[j];
+        long currDuration = currTime - startTime;
+
+        // Instant animation or finished animation
+        if (duration == 0 || currDuration >= duration) {
+          ledsInternal[i].current[j] = target;
+          break;
+        }
+
+        // Lerp
+        ledsInternal[i].current[j] = ((target - initial) * currDuration/duration) + initial;
+      }
+
+      leds[i][j] = dim8_video(ledsInternal[i].current[j]);
+      // leds[i][j] = dim8_lin(ledsInternal[i].current[j]);
+    }
+  }
+}
+
+void ledFade(int boardIndex, int ledIndex, uint8_t target, long duration) {
+  ledsInternal[boardIndex].initial[ledIndex] = ledsInternal[boardIndex].current[ledIndex];
+  ledsInternal[boardIndex].target[ledIndex] = target;
+  ledsInternal[boardIndex].startTimes[ledIndex] = millis();
+  ledsInternal[boardIndex].durations[ledIndex] = duration;
+}
+
+void ledSet(int boardIndex, int ledIndex, uint8_t target) {
+  ledFade(boardIndex, ledIndex, target, 0);
+}
+
+void ledsOff(long duration) {
+  for (int i = 0 ; i < NUM_LED_BOARDS; i++) {
+    for (int j = 0 ; j < 3; j++) {
+      ledFade(i, j, 0, duration);
+    }
+  }
+}
 
 void setup() {
 #ifdef DEBUG
@@ -312,6 +431,7 @@ void loop() {
       digitalWrite(SMOKE_PIN, LOW);
 
       // Stop Motor
+      // TODO: possibly move motor until lid is closed first
       ledcWrite(MOTOR_PWM_CHANNEL, 0);
 
       // Stop Audio
@@ -320,7 +440,7 @@ void loop() {
       }
 
       // Turn off LEDs
-      ledsOff();
+      ledsOff(1000);
     }
   }
 
@@ -328,12 +448,13 @@ void loop() {
     bool newActivatedState = checkActivatedState();
 
     if (newActivatedState != activatedState) {
+      // TODO: need to also run this when the mode changes and when program starts
       // State changed, so do one time actions that the new state needs
       activatedState = newActivatedState;
       
       if (newActivatedState) {
         // On activation actions
-        ledsOff();
+        ledsOff(0);
 
         if (audioInit) {
           DF1201S.setPlayMode(DF1201S.SINGLE);
@@ -349,47 +470,76 @@ void loop() {
           // Maybe needs this start command?
           // DF1201S.start();
         }
-        
-        leds[LED_FRONT_INDEX][LED_RED_INDEX] = 255*0.3;  // 30%
+
+        ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
+        ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 200);
       }
     }
 
     // Do the continuous actions such as animations
     if (activatedState) {
       // Activated loop
-      
+
     } else {
       // Standby loop
 
-      // TODO: Candle filcker
-      leds[LED_FRONT_INDEX][LED_WHITE_INDEX] = 200;
-      // TODO: Breathe
-      leds[LED_INSIDE_INDEX][LED_RED_INDEX] = 100;
-      // TODO: ?
-      leds[LED_INSIDE_INDEX][LED_WHITE_INDEX] = random(255);
-      FastLED.show();
+      // Candle flicker
+      if (!ledCurrentlyFading(LED_FRONT_INDEX, LED_WHITE_INDEX)) {
+        // ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, inoise8(millis()), 200);
+        // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, inoise8(millis())/10);
+        // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, dim8_video(inoise8(millis())/2));
+        // uint8_t flicker = qadd8(blend8(CANDLE_BRIGHTNESS,
+        //                                ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
+        //                                CANDLE_ALPHA),
+        //                         dim8_video(inoise8(millis())/3));
+        uint8_t starting_blend = blend8(CANDLE_BRIGHTNESS,
+                                  ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
+                                  CANDLE_ALPHA);
+        int8_t random_flicker = static_cast<int8_t>(ease8InOutCubic(random8())) * CANDLE_INTENSITY;
+        uint8_t flicker;
+        if (random_flicker < 0) {
+          flicker = qsub8(starting_blend, -random_flicker);
+        } else {
+          flicker = qadd8(starting_blend, random_flicker);
+        }
 
+        ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, flicker, CANDLE_INTERVAL);
+      }
+
+      // Breathing animation
+      // TODO: maybe use easing on the breathing
+      // TODO: maybe slight pause when dark
+      if (!ledCurrentlyFading(LED_INSIDE_INDEX, LED_RED_INDEX)) {
+        if (ledsInternal[LED_INSIDE_INDEX].current[LED_RED_INDEX] < BREATHING_MAX) {
+          ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MAX, BREATHING_INTERVAL);
+        } else {
+          ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MIN, BREATHING_INTERVAL);
+        }
+      }
     }
 
-
+    // TODO: white inside?
+    // ledSet(LED_INSIDE_INDEX, LED_WHITE_INDEX, random(255));
+    
     // if (digitalRead(LID_PIN) == HIGH) {
     //   // Lid open
     // }
 
     // ledcWrite(MOTOR_PWM_CHANNEL, 0);
 
-    // leds[LED_FRONT_INDEX][LED_RED_INDEX] = 100;
-    // leds[LED_FRONT_INDEX][LED_WHITE_INDEX] = 200;
+    // ledSet(LED_FRONT_INDEX, LED_RED_INDEX, 100);
+    // ledSet(LED_FRONT_INDEX, LED_WHITE_INDEX, 200);
     // FastLED.show();
     // delay(500);
     
-    // leds[LED_FRONT_INDEX][LED_RED_INDEX] = 0;
-    // leds[LED_FRONT_INDEX][LED_WHITE_INDEX] = 100;
+    // ledSet(LED_FRONT_INDEX, LED_RED_INDEX, 0);
+    // ledSet(LED_FRONT_INDEX, LED_WHITE_INDEX, 100);
 
     // ledcWrite(MOTOR_PWM_CHANNEL, 1024);
 
-    // FastLED.show();
   }
 
+  ledProcessFades();
+  FastLED.show();
   delay(LOOP_TIME);
 }

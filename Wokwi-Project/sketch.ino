@@ -85,9 +85,9 @@
 // 19531Hz  12  4096
 // The code is using a bit depth of 10
 // Not sure what frequency is best for the motor, 16-20kHz is claimed to reduce noise, but it might not handle high frequencies and the mosfet might run hot
-#define MOTOR_PWM_FREQ 16000
+#define MOTOR_PWM_FREQ     16000
 #define MOTOR_NORMAL_SPEED 4095  // Integer 0-4095
-#define MOTOR_SLOW_SPEED 3000  // Integer 0-4095
+#define MOTOR_SLOW_SPEED   3000  // Integer 0-4095
 
 // Audio
 #define AUDIO                  // Enable the DFPlayer Pro audio player, comment out to disable
@@ -98,6 +98,7 @@
 #define STANDBY_TRACK "standby_track.wav"
 
 // LEDs
+#define GAMMA_CORRECT        // Gamma correction on the birghtness of all LEDs, comment out to disable
 #define NUM_LED_BOARDS 2
 // Order of the LED boards
 #define LED_FRONT_INDEX  0
@@ -106,7 +107,7 @@
 #define LED_RED_INDEX   0
 #define LED_WHITE_INDEX 1
 
-#define PERCENT(x) static_cast<uint8_t>(x * 255/100)
+#define PERCENT(x) static_cast<uint8_t>(x * 255/100)  // Allows using PERCENT(x) to change a brightness from 0-100 into 0-255
 
 // LED Effects
 #define GLOW_RED_BRIGHTNESS PERCENT(30)
@@ -298,14 +299,74 @@ bool checkActivatedState() {
   return false;
 }
 
-float random_float() {
-  return static_cast<float>(random(UINT32_MAX-1)) / static_cast<float>(UINT32_MAX);
+void activatedStateInit() {
+  ledsOff(0);
+
+  if (audioInit) {
+    DF1201S.setPlayMode(DF1201S.SINGLE);
+    DF1201S.playSpecFile(ACTIVATION_TRACK);
+    // Maybe needs this start command?
+    // DF1201S.start();
+  }
+}
+void activatedStateLoop() {
+}
+void standbyStateInit() {
+  if (audioInit) {
+    DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
+    DF1201S.playSpecFile(STANDBY_TRACK);
+    // Maybe needs this start command?
+    // DF1201S.start();
+  }
+
+  ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
+  ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 500);
+}
+void standbyStateLoop() {
+  // Candle flicker
+  if (!ledCurrentlyFading(LED_FRONT_INDEX, LED_WHITE_INDEX)) {
+    // ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, inoise8(millis()), 200);
+    // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, inoise8(millis())/10);
+    // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, dim8_video(inoise8(millis())/2));
+    // uint8_t flicker = qadd8(blend8(CANDLE_BRIGHTNESS,
+    //                                ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
+    //                                CANDLE_ALPHA),
+    //                         dim8_video(inoise8(millis())/3));
+    uint8_t starting_blend = blend8(CANDLE_BRIGHTNESS,
+                              ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
+                              CANDLE_ALPHA);
+    int8_t random_flicker = static_cast<int8_t>(ease8InOutCubic(random8())) * CANDLE_INTENSITY;
+    uint8_t flicker;
+    if (random_flicker < 0) {
+      flicker = qsub8(starting_blend, -random_flicker);
+    } else {
+      flicker = qadd8(starting_blend, random_flicker);
+    }
+
+    ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, flicker, CANDLE_INTERVAL);
+  }
+
+  // Breathing animation
+  // TODO: maybe use easing on the breathing
+  // TODO: maybe slight pause when dark
+  if (!ledCurrentlyFading(LED_INSIDE_INDEX, LED_RED_INDEX)) {
+    if (ledsInternal[LED_INSIDE_INDEX].current[LED_RED_INDEX] < BREATHING_MAX) {
+      ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MAX, BREATHING_INTERVAL);
+    } else {
+      ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MIN, BREATHING_INTERVAL);
+    }
+  }
 }
 
-inline static float random_cubic_float() {
-  const float r = random_float() * 2.0f - 1.0f;
-  return r * r * r;
-}
+
+// float random_float() {
+//   return static_cast<float>(random(UINT32_MAX-1)) / static_cast<float>(UINT32_MAX);
+// }
+
+// inline static float random_cubic_float() {
+//   const float r = random_float() * 2.0f - 1.0f;
+//   return r * r * r;
+// }
 
 bool ledCurrentlyFading(int boardIndex) {
   return (ledsInternal[boardIndex].current != ledsInternal[boardIndex].target);
@@ -339,8 +400,12 @@ void ledProcessFades() {
         ledsInternal[i].current[j] = ((target - initial) * currDuration/duration) + initial;
       }
 
+#ifdef GAMMA_CORRECT
       leds[i][j] = dim8_video(ledsInternal[i].current[j]);
+#else
+      leds[i][j] = ledsInternal[i].current[j];
       // leds[i][j] = dim8_lin(ledsInternal[i].current[j]);
+#endif
     }
   }
 }
@@ -412,6 +477,8 @@ void setup() {
   // Front LEDs Red/White + Internal LEDs red/white
   // FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
   FastLED.addLeds<P9813, LED_DATA_PIN, LED_CLK_PIN>(leds, NUM_LED_BOARDS);
+
+  standbyStateInit();
 }
 
 
@@ -422,11 +489,13 @@ void loop() {
     // Mode changed, so reset and setup anything the new mode needs
     currentMode = newMode;
 
-    activatedState = false;
     PIRDetected = false;
-    lastDeactivationTime = millis();
 
-    if (newMode == Stop) {
+    if (newMode != Stop) {
+      activatedState = false;
+      lastDeactivationTime = millis();
+      standbyStateInit();
+    } else {
       // Stop Smoke
       digitalWrite(SMOKE_PIN, LOW);
 
@@ -447,6 +516,7 @@ void loop() {
   if (currentMode != Stop) {
     bool newActivatedState = checkActivatedState();
 
+    // Initialize new state if needed
     if (newActivatedState != activatedState) {
       // TODO: need to also run this when the mode changes and when program starts
       // State changed, so do one time actions that the new state needs
@@ -454,68 +524,20 @@ void loop() {
       
       if (newActivatedState) {
         // On activation actions
-        ledsOff(0);
-
-        if (audioInit) {
-          DF1201S.setPlayMode(DF1201S.SINGLE);
-          DF1201S.playSpecFile(ACTIVATION_TRACK);
-          // Maybe needs this start command?
-          // DF1201S.start();
-        }
+        activatedStateInit();
       } else {
         // On standby actions
-        if (audioInit) {
-          DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
-          DF1201S.playSpecFile(STANDBY_TRACK);
-          // Maybe needs this start command?
-          // DF1201S.start();
-        }
-
-        ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
-        ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 200);
+        standbyStateInit();
       }
     }
 
     // Do the continuous actions such as animations
     if (activatedState) {
-      // Activated loop
-
+      // Activated loopde
+      activatedStateLoop();
     } else {
       // Standby loop
-
-      // Candle flicker
-      if (!ledCurrentlyFading(LED_FRONT_INDEX, LED_WHITE_INDEX)) {
-        // ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, inoise8(millis()), 200);
-        // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, inoise8(millis())/10);
-        // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, dim8_video(inoise8(millis())/2));
-        // uint8_t flicker = qadd8(blend8(CANDLE_BRIGHTNESS,
-        //                                ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
-        //                                CANDLE_ALPHA),
-        //                         dim8_video(inoise8(millis())/3));
-        uint8_t starting_blend = blend8(CANDLE_BRIGHTNESS,
-                                  ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
-                                  CANDLE_ALPHA);
-        int8_t random_flicker = static_cast<int8_t>(ease8InOutCubic(random8())) * CANDLE_INTENSITY;
-        uint8_t flicker;
-        if (random_flicker < 0) {
-          flicker = qsub8(starting_blend, -random_flicker);
-        } else {
-          flicker = qadd8(starting_blend, random_flicker);
-        }
-
-        ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, flicker, CANDLE_INTERVAL);
-      }
-
-      // Breathing animation
-      // TODO: maybe use easing on the breathing
-      // TODO: maybe slight pause when dark
-      if (!ledCurrentlyFading(LED_INSIDE_INDEX, LED_RED_INDEX)) {
-        if (ledsInternal[LED_INSIDE_INDEX].current[LED_RED_INDEX] < BREATHING_MAX) {
-          ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MAX, BREATHING_INTERVAL);
-        } else {
-          ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MIN, BREATHING_INTERVAL);
-        }
-      }
+      standbyStateLoop();
     }
 
     // TODO: white inside?

@@ -11,41 +11,24 @@
 //   Internal LED Strip red and white (run from a digital mosfet)
 
 // Standby:
-//   audio track loops
-//   front white leds candle flicker
-//   front red leds at 30%
-//   inside red leds "breathe" between 30% and 70% brightness
+//   Audio track loops
+//   Front white leds candle flicker
+//   Front red leds at 30%
+//   Inside red leds "breathe" between 30% and 70% brightness
 //   (might have motor pulse every now and again to move the lid up and down havent decided)
 
 // Activated:
-//   all lights go dark
-//   activation track plays
+//   All lights go dark
+//   Activation track plays
 //   Then synced to the audio:
-//    Red fade in/out
-//    White fade in/out
-//    Flickers red
-//    Flickers white
-//    Motor and smoke activates
-//    Flickers between red/white
+//    0sec to 1sec internal Red fade in/out (monster is Red)
+//    1-1.5sec internal White fade in/out (cat is white)
+//    Strobe internal red 1.5sec
+//    Strobe internal white 1.5sec
+//    Strobe internal white and red + Motor and smoke activates
 //    Wait until 10 sec point
-//    Goes dark/motor and smoke stops
-//    Run motor slowly until lid is closed
-//    Wait
-//    Little red flickers
-//   Deactivate as the audio ends
-
-// Activated: (internal leds only)
-//   all lights go dark
-//   activation track plays
-//   Then synced to the audio:
-//    0sec to 1sec Red fade in/out (monster is Red)
-//    1-1.5sec White fade in/out (cat is white)
-//    strobe red 1.5sec
-//    strobe white 1.5sec
-//    strobe white and red + Motor and smoke activates
-//    Wait until 10 sec point
-//    white to full then fade out over 800ms
-//    Goes dark/motor and smoke stops
+//    Internal white to full then fade out over 800ms
+//    Everything stops
 //    Run motor slowly until lid is closed
 //    Wait
 //    Little red flickers
@@ -73,8 +56,9 @@
 #define RANDOM_STOP_MIN  10000  // Minimum time before random mode could deactivate
 #define RANDOM_STOP_MAX  15000  // Maximum time before random mode could deactivate
 
-// PIR
+// Auto/PIR
 #define PIR_TIMEOUT  10000  // Timeout in miliseconds after the PIR was last activated
+#define AUTO_ACTIVATION_COOLDOWN 10000  // Cooldown after activation finishes before the PIR will trigger another actiavtion
 
 // Motor
 // PWM Frequency/Bit Depth/Steps
@@ -244,6 +228,10 @@ void IRAM_ATTR PIRInterrupt() {
   PIRDetected = true;
 }
 
+bool lidOpen() {
+  return (digitalRead(LID_PIN) == HIGH);
+}
+
 ActivationMode readMode() {
   ActivationMode result = Auto;
 
@@ -265,8 +253,10 @@ bool checkActivatedState() {
     PIRDetected = false;
     // Test for if we actually care about the activation
     if (currentMode == Auto) {
-      lastActivationTime = millis();
-      return true;
+      if (millis() - lastDeactivationTime > AUTO_ACTIVATION_COOLDOWN) {
+        lastActivationTime = millis();
+        return true;
+      }
     }
   }
 
@@ -322,18 +312,23 @@ void standbyStateInit() {
   ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
   ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 500);
 }
+
 void standbyStateLoop() {
-  // Candle flicker
-  if (!ledCurrentlyFading(LED_FRONT_INDEX, LED_WHITE_INDEX)) {
-    // ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, inoise8(millis()), 200);
+  ledCandleFlicker(LED_FRONT_INDEX, LED_WHITE_INDEX);
+  ledBreathing(LED_INSIDE_INDEX, LED_RED_INDEX);
+}
+
+void ledCandleFlicker(int boardIndex, int ledIndex) {
+  if (!ledCurrentlyFading(boardIndex, ledIndex)) {
+    // ledFade(boardIndex, ledIndex, inoise8(millis()), 200);
     // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, inoise8(millis())/10);
     // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, dim8_video(inoise8(millis())/2));
     // uint8_t flicker = qadd8(blend8(CANDLE_BRIGHTNESS,
-    //                                ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
+    //                                ledsInternal[boardIndex].current[ledIndex],
     //                                CANDLE_ALPHA),
     //                         dim8_video(inoise8(millis())/3));
     uint8_t starting_blend = blend8(CANDLE_BRIGHTNESS,
-                              ledsInternal[LED_FRONT_INDEX].current[LED_WHITE_INDEX],
+                              ledsInternal[boardIndex].current[ledIndex],
                               CANDLE_ALPHA);
     int8_t random_flicker = static_cast<int8_t>(ease8InOutCubic(random8())) * CANDLE_INTENSITY;
     uint8_t flicker;
@@ -343,20 +338,21 @@ void standbyStateLoop() {
       flicker = qadd8(starting_blend, random_flicker);
     }
 
-    ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, flicker, CANDLE_INTERVAL);
+    ledFade(boardIndex, ledIndex, flicker, CANDLE_INTERVAL);
   }
-
-  // Breathing animation
+}
+void ledBreathing(int boardIndex, int ledIndex) {
   // TODO: maybe use easing on the breathing
   // TODO: maybe slight pause when dark
-  if (!ledCurrentlyFading(LED_INSIDE_INDEX, LED_RED_INDEX)) {
-    if (ledsInternal[LED_INSIDE_INDEX].current[LED_RED_INDEX] < BREATHING_MAX) {
-      ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MAX, BREATHING_INTERVAL);
+  if (!ledCurrentlyFading(boardIndex, ledIndex)) {
+    if (ledsInternal[boardIndex].current[ledIndex] < BREATHING_MAX) {
+      ledFade(boardIndex, ledIndex, BREATHING_MAX, BREATHING_INTERVAL);
     } else {
-      ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, BREATHING_MIN, BREATHING_INTERVAL);
+      ledFade(boardIndex, ledIndex, BREATHING_MIN, BREATHING_INTERVAL);
     }
   }
 }
+
 
 
 // float random_float() {
@@ -533,20 +529,23 @@ void loop() {
 
     // Do the continuous actions such as animations
     if (activatedState) {
-      // Activated loopde
+      // Activated loop
       activatedStateLoop();
     } else {
       // Standby loop
       standbyStateLoop();
     }
 
+
+    // if (lidOpen()) {
+    //   ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_SLOW_SPEED);
+    // } else {
+    //   ledcWrite(MOTOR_PWM_CHANNEL, 0);
+    // }
+
     // TODO: white inside?
     // ledSet(LED_INSIDE_INDEX, LED_WHITE_INDEX, random(255));
     
-    // if (digitalRead(LID_PIN) == HIGH) {
-    //   // Lid open
-    // }
-
     // ledcWrite(MOTOR_PWM_CHANNEL, 0);
 
     // ledSet(LED_FRONT_INDEX, LED_RED_INDEX, 100);

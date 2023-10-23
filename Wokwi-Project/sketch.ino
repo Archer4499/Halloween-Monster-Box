@@ -53,11 +53,8 @@
 // Random Mode
 #define RANDOM_START_MIN 10000  // Minimum time before random mode could activate
 #define RANDOM_START_MAX 15000  // Maximum time before random mode could activate
-#define RANDOM_STOP_MIN  10000  // Minimum time before random mode could deactivate
-#define RANDOM_STOP_MAX  15000  // Maximum time before random mode could deactivate
 
 // Auto/PIR
-#define PIR_TIMEOUT  10000  // Timeout in miliseconds after the PIR was last activated
 #define AUTO_ACTIVATION_COOLDOWN 10000  // Cooldown after activation finishes before the PIR will trigger another actiavtion
 
 // Motor
@@ -191,19 +188,23 @@
 
 
 enum ActivationMode {
-  Stop,
-  Auto,
-  GrowlOnly,
-  Random
+  MODE_STOP,
+  MODE_AUTO,
+  MODE_GROWL_ONLY,
+  MODE_RANDOM,
 };
-ActivationMode currentMode = Auto;
+ActivationMode currentMode = MODE_AUTO;
 
-bool activatedState = false;
-volatile bool PIRDetected = false;
-volatile long lastActivationTime = 0;
-long lastDeactivationTime = 0;
+enum AnimationState {
+  STATE_STANDBY_INIT,
+  STATE_STANDBY,
+  STATE_ACTIVATED_INIT,
+  STATE_ACTIVATED,
+};
+volatile AnimationState currentState = STATE_STANDBY_INIT;
+
+long lastStandbyTime = 0;
 long randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
-long randomStopTime = random(RANDOM_STOP_MIN, RANDOM_STOP_MAX);
 
 // Audio
 HardwareSerial DF1201SSerial(2);
@@ -225,7 +226,11 @@ ledInternal ledsInternal[NUM_LED_BOARDS];
 
 
 void IRAM_ATTR PIRInterrupt() {
-  PIRDetected = true;
+  if (currentMode == MODE_AUTO && currentState == STATE_STANDBY) {
+    if (millis() - lastStandbyTime > AUTO_ACTIVATION_COOLDOWN) {
+      currentState = STATE_ACTIVATED_INIT;
+    }
+  }
 }
 
 bool lidOpen() {
@@ -233,89 +238,35 @@ bool lidOpen() {
 }
 
 ActivationMode readMode() {
-  ActivationMode result = Auto;
+  ActivationMode result = MODE_AUTO;
 
   if (digitalRead(MODE_PIN_1) == LOW) {
-    result = Stop;
+    result = MODE_STOP;
   } else if (digitalRead(MODE_PIN_2) == LOW) {
-    result = Auto;
+    result = MODE_AUTO;
   } else if (digitalRead(MODE_PIN_3) == LOW) {
-    result = GrowlOnly;
+    result = MODE_GROWL_ONLY;
   } else if (digitalRead(MODE_PIN_4) == LOW) {
-    result = Random;
+    result = MODE_RANDOM;
   }
   return result;
 }
 
-bool checkActivatedState() {
-  // PIRDetected is always set back to false so if it's true then we know it is a new activation
-  if (PIRDetected) {
-    PIRDetected = false;
-    // Test for if we actually care about the activation
-    if (currentMode == Auto) {
-      if (millis() - lastDeactivationTime > AUTO_ACTIVATION_COOLDOWN) {
-        lastActivationTime = millis();
-        return true;
-      }
-    }
-  }
-
-  if (activatedState) {
-    // Should deactivate?
-    if (currentMode == Auto) {
-      if (millis() - lastActivationTime > PIR_TIMEOUT) {
-        lastDeactivationTime = millis();
-        return false;
-      }
-    } else if (currentMode == Random) {
-      if (millis() - lastActivationTime > randomStopTime) {
-        lastDeactivationTime = millis();
-        randomStopTime = random(RANDOM_STOP_MIN, RANDOM_STOP_MAX);
-        return false;
-      }
-    }
-    return true;
-  }
-   
-  // Should Activate?
-  if (currentMode == Random) {
-    if (millis() - lastDeactivationTime > randomStartTime) {
-      lastActivationTime = millis();
-      randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
-      return true;
-    }
-  }
-
-  return false;
-}
-
-void activatedStateInit() {
-  ledsOff(0);
-
-  if (audioInit) {
-    DF1201S.setPlayMode(DF1201S.SINGLE);
-    DF1201S.playSpecFile(ACTIVATION_TRACK);
-    // Maybe needs this start command?
-    // DF1201S.start();
-  }
-}
-void activatedStateLoop() {
-}
-void standbyStateInit() {
+void playStandbyTrack() {
   if (audioInit) {
     DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
     DF1201S.playSpecFile(STANDBY_TRACK);
     // Maybe needs this start command?
     // DF1201S.start();
   }
-
-  ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
-  ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 500);
 }
-
-void standbyStateLoop() {
-  ledCandleFlicker(LED_FRONT_INDEX, LED_WHITE_INDEX);
-  ledBreathing(LED_INSIDE_INDEX, LED_RED_INDEX);
+void playActivationTrack() {
+  if (audioInit) {
+    DF1201S.setPlayMode(DF1201S.SINGLE);
+    DF1201S.playSpecFile(ACTIVATION_TRACK);
+    // Maybe needs this start command?
+    // DF1201S.start();
+  }
 }
 
 void ledCandleFlicker(int boardIndex, int ledIndex) {
@@ -353,16 +304,6 @@ void ledBreathing(int boardIndex, int ledIndex) {
   }
 }
 
-
-
-// float random_float() {
-//   return static_cast<float>(random(UINT32_MAX-1)) / static_cast<float>(UINT32_MAX);
-// }
-
-// inline static float random_cubic_float() {
-//   const float r = random_float() * 2.0f - 1.0f;
-//   return r * r * r;
-// }
 
 bool ledCurrentlyFading(int boardIndex) {
   return (ledsInternal[boardIndex].current != ledsInternal[boardIndex].target);
@@ -470,11 +411,9 @@ void setup() {
   }
 #endif
 
-  // Front LEDs Red/White + Internal LEDs red/white
+  // LEDs
   // FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
   FastLED.addLeds<P9813, LED_DATA_PIN, LED_CLK_PIN>(leds, NUM_LED_BOARDS);
-
-  standbyStateInit();
 }
 
 
@@ -485,13 +424,9 @@ void loop() {
     // Mode changed, so reset and setup anything the new mode needs
     currentMode = newMode;
 
-    PIRDetected = false;
+    currentState = STATE_STANDBY_INIT;
 
-    if (newMode != Stop) {
-      activatedState = false;
-      lastDeactivationTime = millis();
-      standbyStateInit();
-    } else {
+    if (newMode == MODE_STOP) {
       // Stop Smoke
       digitalWrite(SMOKE_PIN, LOW);
 
@@ -509,33 +444,40 @@ void loop() {
     }
   }
 
-  if (currentMode != Stop) {
-    bool newActivatedState = checkActivatedState();
+  // Perform animations if we aren't stopped
+  if (currentMode != MODE_STOP) {
+    switch(currentState) {
+      case STATE_STANDBY_INIT:
+        playStandbyTrack();
+        ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
+        ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 500);
 
-    // Initialize new state if needed
-    if (newActivatedState != activatedState) {
-      // TODO: need to also run this when the mode changes and when program starts
-      // State changed, so do one time actions that the new state needs
-      activatedState = newActivatedState;
-      
-      if (newActivatedState) {
-        // On activation actions
-        activatedStateInit();
-      } else {
-        // On standby actions
-        standbyStateInit();
-      }
+        lastStandbyTime = millis();
+        currentState = STATE_STANDBY;
+        break;
+      case STATE_STANDBY:
+        ledCandleFlicker(LED_FRONT_INDEX, LED_WHITE_INDEX);
+        ledBreathing(LED_INSIDE_INDEX, LED_RED_INDEX);
+
+        // Check for random activation
+        if (currentMode == MODE_RANDOM) {
+          if (millis() - lastStandbyTime > randomStartTime) {
+            randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
+            currentState = STATE_ACTIVATED_INIT;
+          }
+        }
+        break;
+      case STATE_ACTIVATED_INIT:
+        playActivationTrack();
+        ledsOff(0);
+
+        currentState = STATE_ACTIVATED;
+        break;
+      case STATE_ACTIVATED:
+        delay(1000);
+        currentState = STATE_STANDBY_INIT;
+        break;
     }
-
-    // Do the continuous actions such as animations
-    if (activatedState) {
-      // Activated loop
-      activatedStateLoop();
-    } else {
-      // Standby loop
-      standbyStateLoop();
-    }
-
 
     // if (lidOpen()) {
     //   ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_SLOW_SPEED);

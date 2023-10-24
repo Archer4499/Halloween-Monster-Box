@@ -1,14 +1,15 @@
 // Inputs
-//   Mode switch - stop|auto|growl only|random activation
+//   Mode buttons - stop|auto|random activation|growl only
 //   PIR sensor
 //   Lid switch (to detect the lid is down)
 
 // Outputs
+//   Mode LED - stop(red)|auto(green)|random activation (white)|growl only(blue)
 //   Smoke machine
 //   Motor (to make the lid jump)
 //   Audio trigger - standby track (growling) Activation Track
 //   Front LED strip Red and White (run from a digital led mosfet)
-//   Internal LED Strip red and white (run from a digital mosfet)
+//   Internal LED strip Red and White (run from a digital led mosfet)
 
 // Standby:
 //   Audio track loops
@@ -18,21 +19,30 @@
 //   (might have motor pulse every now and again to move the lid up and down havent decided)
 
 // Activated:
+//  Stage 0 (0s):
 //   All lights go dark
 //   Activation track plays
-//   Then synced to the audio:
-//    0sec to 1sec internal Red fade in/out (monster is Red)
-//    1-1.5sec internal White fade in/out (cat is white)
-//    Strobe internal red 1.5sec
-//    Strobe internal white 1.5sec
-//    Strobe internal white and red + Motor and smoke activates
-//    Wait until 10 sec point
-//    Internal white to full then fade out over 800ms
-//    Everything stops
-//    Run motor slowly until lid is closed
-//    Wait
-//    Little red flickers
-//   Deactivate as the audio ends
+//  Stage 1 (0s-1.2s):
+//   Internal Red fade in/out (monster is Red)
+//  Stage 2 (1.2s-2.2s):
+//   Internal White fade in/out (cat is white)
+//  Stage 3 (2.2s-3.5s):
+//   Internal red strobe
+//  Stage 4 (3.5s-4.2s):
+//   Internal white strobe
+//  Stage 5 (4.2s-10.5s):
+//   Internal white and red strobe + Motor and smoke activates
+//  Stage 6 (10.5s-11.5s):
+//   Internal white to full then fade out
+//   Everything stops
+//  Stage 7 (11.5s-16.7):
+//   Run motor slowly until lid is closed then wait
+//  Stage 8 (16.7s-18.7s):
+//   Little red flickers
+//   TODO: Maybe motor movement?
+//  Stage 9 (18.7s-Audio end (19.632s)):
+//   Wait then switch back to standby
+
 
 // TODO:
 //
@@ -42,17 +52,17 @@
 // 
 
 
-
 ////////    Config    ////////
 
 //// Constants/Settings ////
 #define DEBUG    // Print debug lines to serial, comment out to disable
 
-#define LOOP_TIME 20  // Time in milliseconds between animation loops
+#define LOOP_TIME      20  // Time in milliseconds between animation loops
+#define DEBOUNCE_DELAY 100  // Time in milliseconds a button double press will be ignored
 
 // Random Mode
-#define RANDOM_START_MIN 10000  // Minimum time before random mode could activate
-#define RANDOM_START_MAX 15000  // Maximum time before random mode could activate
+#define RANDOM_START_MIN 100000  // Minimum time before random mode could activate
+#define RANDOM_START_MAX 200000  // Maximum time before random mode could activate
 
 // Auto/PIR
 #define AUTO_ACTIVATION_COOLDOWN 10000  // Cooldown after activation finishes before the PIR will trigger another actiavtion
@@ -139,11 +149,11 @@
 // 34  35  36/VP
 
 // Inputs:
-//   Digital In Pullup    - Mode switch (Alternatively 1 analog pin with resistors)
+//   Digital In Pullup    - Mode buttons
 #define MODE_PIN_1 27  // Stop
 #define MODE_PIN_2 26  // Auto
-#define MODE_PIN_3 25  // GrowlOnly
-#define MODE_PIN_4 33  // Random
+#define MODE_PIN_3 25  // Random
+#define MODE_PIN_4 33  // Growl only
 
 //   Digital In Interrupt - PIR sensor
 #define PIR_PIN    13
@@ -152,6 +162,9 @@
 #define LID_PIN    32
 
 // Outputs:
+//   Digital Out - Mode LED
+#define MODE_LED_PIN    4
+
 //   Digital Out - Smoke machine
 #define SMOKE_PIN    21
 
@@ -193,35 +206,20 @@
 enum ActivationMode {
   MODE_STOP,
   MODE_AUTO,
-  MODE_GROWL_ONLY,
   MODE_RANDOM,
+  MODE_GROWL_ONLY,
 };
-ActivationMode currentMode = MODE_AUTO;
+ActivationMode currentMode  = MODE_AUTO;
+volatile ActivationMode newMode = MODE_AUTO;
 
-// Activated:
-//  Stage 0 (0s):
-//   All lights go dark
-//   Activation track plays
-//  Stage 1 (0s-1.2s):
-//   Internal Red fade in/out (monster is Red)
-//  Stage 2 (1.2s-2.2s):
-//   Internal White fade in/out (cat is white)
-//  Stage 3 (2.2s-3.5s):
-//   Internal red strobe
-//  Stage 4 (3.5s-4.2s):
-//   Internal white strobe
-//  Stage 5 (4.2s-10.5s):
-//   Internal white and red strobe + Motor and smoke activates
-//  Stage 6 (10.5s-11.5s):
-//   Internal white to full then fade out
-//   Everything stops
-//  Stage 7 (11.5s-16.7):
-//   Run motor slowly until lid is closed then wait
-//  Stage 8 (16.7s-18.7s):
-//   Little red flickers
-//   TODO: Maybe motor movement?
-//  Stage 9 (18.7s-Audio end (19.632s)):
-//   Wait
+// TODO: debouncing probably actually doesn't matter
+//        since we're just setting the newMode, 
+//        which won't do anything if it's already set by that button
+volatile long lastButton1Press = 0;
+volatile long lastButton2Press = 0;
+volatile long lastButton3Press = 0;
+volatile long lastButton4Press = 0;
+
 enum AnimationState {
   ANIM_STANDBY_INIT,
   ANIM_STANDBY,
@@ -248,6 +246,8 @@ DFRobot_DF1201S DF1201S;
 bool audioInit = false;
 
 // LEDS
+CRGB modeLed = CRGB::Green;
+
 CRGB leds[NUM_LED_BOARDS];
 struct ledInternal {
   CRGB initial;
@@ -269,6 +269,31 @@ void IRAM_ATTR PIRInterrupt() {
   }
 }
 
+void IRAM_ATTR modeButton1Interrupt() {
+  if (millis() - lastButton1Press > DEBOUNCE_DELAY) {
+    lastButton1Press = millis();
+    newMode = MODE_STOP;
+  }
+}
+void IRAM_ATTR modeButton2Interrupt() {
+  if (millis() - lastButton2Press > DEBOUNCE_DELAY) {
+    lastButton2Press = millis();
+    newMode = MODE_AUTO;
+  }
+}
+void IRAM_ATTR modeButton3Interrupt() {
+  if (millis() - lastButton3Press > DEBOUNCE_DELAY) {
+    lastButton3Press = millis();
+    newMode = MODE_RANDOM;
+  }
+}
+void IRAM_ATTR modeButton4Interrupt() {
+  if (millis() - lastButton4Press > DEBOUNCE_DELAY) {
+    lastButton4Press = millis();
+    newMode = MODE_GROWL_ONLY;
+  }
+}
+
 bool isLidClosed() {
   return (digitalRead(LID_PIN) == LOW);
 }
@@ -281,9 +306,9 @@ ActivationMode readMode() {
   } else if (digitalRead(MODE_PIN_2) == LOW) {
     result = MODE_AUTO;
   } else if (digitalRead(MODE_PIN_3) == LOW) {
-    result = MODE_GROWL_ONLY;
-  } else if (digitalRead(MODE_PIN_4) == LOW) {
     result = MODE_RANDOM;
+  } else if (digitalRead(MODE_PIN_4) == LOW) {
+    result = MODE_GROWL_ONLY;
   }
   return result;
 }
@@ -420,11 +445,15 @@ void setup() {
   randomSeed(analogRead(39));  // Use random noise from unconnected pin read
 
   // Inputs:
-  // Mode switch
+  // Mode buttons
   pinMode(MODE_PIN_1, INPUT_PULLUP);
+  attachInterrupt(MODE_PIN_1, modeButton1Interrupt, RISING);
   pinMode(MODE_PIN_2, INPUT_PULLUP);
+  attachInterrupt(MODE_PIN_2, modeButton2Interrupt, RISING);
   pinMode(MODE_PIN_3, INPUT_PULLUP);
+  attachInterrupt(MODE_PIN_3, modeButton3Interrupt, RISING);
   pinMode(MODE_PIN_4, INPUT_PULLUP);
+  attachInterrupt(MODE_PIN_4, modeButton4Interrupt, RISING);
   // PIR sensor
   pinMode(PIR_PIN, INPUT);
   attachInterrupt(PIR_PIN, PIRInterrupt, RISING);
@@ -458,6 +487,9 @@ void setup() {
 #endif
 
   // LEDs
+  // TODO: This makes the program get stuck somewhere
+  // FastLED.addLeds<NEOPIXEL, MODE_LED_PIN>(&modeLed, 1);
+
   // FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
   FastLED.addLeds<P9813, LED_DATA_PIN, LED_CLK_PIN>(leds, NUM_LED_BOARDS);
 }
@@ -465,10 +497,11 @@ void setup() {
 
 void loop() {
   // Check what state we should be in from the switch
-  ActivationMode newMode = readMode();
   if (newMode != currentMode) {
     // Mode changed, so reset and setup anything the new mode needs
     currentMode = newMode;
+    DEBUG_PRINT("New mode: ");
+    DEBUG_PRINTLN(newMode);
 
     currentState = ANIM_STANDBY_INIT;
 
@@ -598,15 +631,19 @@ void loop() {
           digitalWrite(SMOKE_PIN, LOW);
           // ledcWrite(MOTOR_PWM_CHANNEL, 0);
           ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_SLOW_SPEED);
+
+          // TODO: ledcRead not working in sim? Testing for Stage 7
+          DEBUG_PRINT("Lid closed: ");
+          DEBUG_PRINT(isLidClosed());
+          DEBUG_PRINT("Current motor PWM: ");
+          DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
+          
           currentState = ANIM_STAGE_7;
         }
         break;
 
       case ANIM_STAGE_7:
         // Run motor until lid is closed
-        // DEBUG_PRINTLN(isLidClosed());
-        // DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
-        // TODO: ledcRead not working in sim?
         // if (isLidClosed() && ledcRead(MOTOR_PWM_CHANNEL) > 0) {
         if (isLidClosed()) {
           ledcWrite(MOTOR_PWM_CHANNEL, 0);

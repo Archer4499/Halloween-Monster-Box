@@ -103,6 +103,8 @@
 #define BREATHING_MAX       PERCENT(70)
 #define BREATHING_INTERVAL  5000
 
+#define STROBE_MAX          PERCENT(80)
+
 // Remote
 // #define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
                     //  https://www.wizconnected.com/en-us/p/accessory-wizmote/046677603595
@@ -303,6 +305,14 @@ void playActivationTrack() {
   }
 }
 
+bool ledCurrentlyFading(int boardIndex) {
+  return (ledsInternal[boardIndex].current != ledsInternal[boardIndex].target);
+}
+
+bool ledCurrentlyFading(int boardIndex, int ledIndex) {
+  return (ledsInternal[boardIndex].current[ledIndex] != ledsInternal[boardIndex].target[ledIndex]);
+}
+
 void ledCandleFlicker(int boardIndex, int ledIndex) {
   if (!ledCurrentlyFading(boardIndex, ledIndex)) {
     // ledFade(boardIndex, ledIndex, inoise8(millis()), 200);
@@ -338,13 +348,15 @@ void ledBreathing(int boardIndex, int ledIndex) {
   }
 }
 
-
-bool ledCurrentlyFading(int boardIndex) {
-  return (ledsInternal[boardIndex].current != ledsInternal[boardIndex].target);
-}
-
-bool ledCurrentlyFading(int boardIndex, int ledIndex) {
-  return (ledsInternal[boardIndex].current[ledIndex] != ledsInternal[boardIndex].target[ledIndex]);
+void ledStrobe(int boardIndex, int ledIndex) {
+  if (!ledCurrentlyFading(boardIndex, ledIndex)) {
+    if (ledsInternal[boardIndex].current[ledIndex] < 128) {
+      ledSet(boardIndex, ledIndex, STROBE_MAX);
+      ledFade(boardIndex, ledIndex, STROBE_MAX, 100);
+    } else {
+      ledFade(boardIndex, ledIndex, 0, random(100, 200));
+    }
+  }
 }
 
 void ledProcessFades() {
@@ -542,18 +554,22 @@ void loop() {
         break;
 
       case ANIM_STAGE_3:
-        // TODO: Internal red strobe
+        // Internal red strobe
+        ledStrobe(LED_INSIDE_INDEX, LED_RED_INDEX);
 
         if (currAnimationTime > 3500) {
+          ledSet(LED_INSIDE_INDEX, LED_RED_INDEX, 0);  // Cleanup strobe
           currentState = ANIM_STAGE_4;
         }
         break;
 
       case ANIM_STAGE_4:
-        // TODO: Internal white strobe
+        // Internal white strobe
         // END: Motor and smoke activates
+        ledStrobe(LED_INSIDE_INDEX, LED_WHITE_INDEX);
 
         if (currAnimationTime > 4200) {
+          ledSet(LED_INSIDE_INDEX, LED_WHITE_INDEX, 0);  // Cleanup strobe
           currentState = ANIM_STAGE_5;
           digitalWrite(SMOKE_PIN, HIGH);
           ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_NORMAL_SPEED);
@@ -561,10 +577,13 @@ void loop() {
         break;
 
       case ANIM_STAGE_5:
-        // TODO: Internal white and red strobe
+        // Internal white and red strobe
         // END: Internal white to full then fade out
+        ledStrobe(LED_INSIDE_INDEX, LED_RED_INDEX);
+        ledStrobe(LED_INSIDE_INDEX, LED_WHITE_INDEX);
 
         if (currAnimationTime > 10500) {
+          ledSet(LED_INSIDE_INDEX, LED_RED_INDEX, 0);  // Cleanup strobe
           currentState = ANIM_STAGE_6;
           ledSet(LED_INSIDE_INDEX, LED_WHITE_INDEX, 255);
           ledFade(LED_INSIDE_INDEX, LED_WHITE_INDEX, 0, 1000);
@@ -601,6 +620,7 @@ void loop() {
 
       case ANIM_STAGE_8:
         // TODO: Little red flickers
+        ledCandleFlicker(LED_INSIDE_INDEX, LED_RED_INDEX);
 
         if (currAnimationTime > 18700) {
           currentState = ANIM_STAGE_9;

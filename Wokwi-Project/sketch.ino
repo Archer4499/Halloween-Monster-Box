@@ -76,6 +76,7 @@
 // Audio tracks can by any of MP3, WAV, WMA, FLAC, AAC, APE formats
 // Stored on the DFPlayer Pro from its USB port
 #define ACTIVATION_TRACK "activation_track.wav"
+#define ACTIVATION_TRACK_LENGTH 19632  // Length in ms of the activation audio file
 #define STANDBY_TRACK "standby_track.wav"
 
 // LEDs
@@ -195,16 +196,49 @@ enum ActivationMode {
 };
 ActivationMode currentMode = MODE_AUTO;
 
+// Activated:
+//  Stage 0 (0s):
+//   All lights go dark
+//   Activation track plays
+//  Stage 1 (0s-1.2s):
+//   Internal Red fade in/out (monster is Red)
+//  Stage 2 (1.2s-2.2s):
+//   Internal White fade in/out (cat is white)
+//  Stage 3 (2.2s-3.5s):
+//   Internal red strobe
+//  Stage 4 (3.5s-4.2s):
+//   Internal white strobe
+//  Stage 5 (4.2s-10.5s):
+//   Internal white and red strobe + Motor and smoke activates
+//  Stage 6 (10.5s-11.5s):
+//   Internal white to full then fade out
+//   Everything stops
+//  Stage 7 (11.5s-16.7):
+//   Run motor slowly until lid is closed then wait
+//  Stage 8 (16.7s-18.7s):
+//   Little red flickers
+//   TODO: Maybe motor movement?
+//  Stage 9 (18.7s-Audio end (19.632s)):
+//   Wait
 enum AnimationState {
-  STATE_STANDBY_INIT,
-  STATE_STANDBY,
-  STATE_ACTIVATED_INIT,
-  STATE_ACTIVATED,
+  ANIM_STANDBY_INIT,
+  ANIM_STANDBY,
+  ANIM_STAGE_0,
+  ANIM_STAGE_1,
+  ANIM_STAGE_2,
+  ANIM_STAGE_3,
+  ANIM_STAGE_4,
+  ANIM_STAGE_5,
+  ANIM_STAGE_6,
+  ANIM_STAGE_7,
+  ANIM_STAGE_8,
+  ANIM_STAGE_9,
 };
-volatile AnimationState currentState = STATE_STANDBY_INIT;
+volatile AnimationState currentState = ANIM_STANDBY_INIT;
 
-long lastStandbyTime = 0;
+long activationTime = 0;
 long randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
+long lastStandbyTime = 0;
 
 // Audio
 HardwareSerial DF1201SSerial(2);
@@ -226,15 +260,15 @@ ledInternal ledsInternal[NUM_LED_BOARDS];
 
 
 void IRAM_ATTR PIRInterrupt() {
-  if (currentMode == MODE_AUTO && currentState == STATE_STANDBY) {
+  if (currentMode == MODE_AUTO && currentState == ANIM_STANDBY) {
     if (millis() - lastStandbyTime > AUTO_ACTIVATION_COOLDOWN) {
-      currentState = STATE_ACTIVATED_INIT;
+      currentState = ANIM_STAGE_0;
     }
   }
 }
 
-bool lidOpen() {
-  return (digitalRead(LID_PIN) == HIGH);
+bool isLidClosed() {
+  return (digitalRead(LID_PIN) == LOW);
 }
 
 ActivationMode readMode() {
@@ -424,7 +458,7 @@ void loop() {
     // Mode changed, so reset and setup anything the new mode needs
     currentMode = newMode;
 
-    currentState = STATE_STANDBY_INIT;
+    currentState = ANIM_STANDBY_INIT;
 
     if (newMode == MODE_STOP) {
       // Stop Smoke
@@ -446,16 +480,19 @@ void loop() {
 
   // Perform animations if we aren't stopped
   if (currentMode != MODE_STOP) {
+    long currAnimationTime = millis() - activationTime;
+
     switch(currentState) {
-      case STATE_STANDBY_INIT:
+      case ANIM_STANDBY_INIT:
         playStandbyTrack();
         ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
         ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 500);
 
         lastStandbyTime = millis();
-        currentState = STATE_STANDBY;
+        currentState = ANIM_STANDBY;
         break;
-      case STATE_STANDBY:
+
+      case ANIM_STANDBY:
         ledCandleFlicker(LED_FRONT_INDEX, LED_WHITE_INDEX);
         ledBreathing(LED_INSIDE_INDEX, LED_RED_INDEX);
 
@@ -463,43 +500,120 @@ void loop() {
         if (currentMode == MODE_RANDOM) {
           if (millis() - lastStandbyTime > randomStartTime) {
             randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
-            currentState = STATE_ACTIVATED_INIT;
+            currentState = ANIM_STAGE_0;
           }
         }
         break;
-      case STATE_ACTIVATED_INIT:
+
+      case ANIM_STAGE_0:
         playActivationTrack();
         ledsOff(0);
 
-        currentState = STATE_ACTIVATED;
+        activationTime = millis();
+
+        DEBUG_PRINT("Stage0: ");
+        DEBUG_PRINTLN(activationTime);
+        
+        currentState = ANIM_STAGE_1;
+        ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, 255, 600);
         break;
-      case STATE_ACTIVATED:
-        delay(1000);
-        currentState = STATE_STANDBY_INIT;
+
+      case ANIM_STAGE_1:
+        // Internal Red fade in/out
+        if (!ledCurrentlyFading(LED_INSIDE_INDEX, LED_RED_INDEX)) {
+          ledFade(LED_INSIDE_INDEX, LED_RED_INDEX, 0, 600);
+        }
+
+        if (currAnimationTime > 1200) {
+          currentState = ANIM_STAGE_2;
+          ledFade(LED_INSIDE_INDEX, LED_WHITE_INDEX, 255, 500);
+        }
+        break;
+
+      case ANIM_STAGE_2:
+        // Internal White fade in/out
+        if (!ledCurrentlyFading(LED_INSIDE_INDEX, LED_WHITE_INDEX)) {
+          ledFade(LED_INSIDE_INDEX, LED_WHITE_INDEX, 0, 500);
+        }
+
+        if (currAnimationTime > 2200) {
+          currentState = ANIM_STAGE_3;
+        }
+        break;
+
+      case ANIM_STAGE_3:
+        // TODO: Internal red strobe
+
+        if (currAnimationTime > 3500) {
+          currentState = ANIM_STAGE_4;
+        }
+        break;
+
+      case ANIM_STAGE_4:
+        // TODO: Internal white strobe
+        // END: Motor and smoke activates
+
+        if (currAnimationTime > 4200) {
+          currentState = ANIM_STAGE_5;
+          digitalWrite(SMOKE_PIN, HIGH);
+          ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_NORMAL_SPEED);
+        }
+        break;
+
+      case ANIM_STAGE_5:
+        // TODO: Internal white and red strobe
+        // END: Internal white to full then fade out
+
+        if (currAnimationTime > 10500) {
+          currentState = ANIM_STAGE_6;
+          ledSet(LED_INSIDE_INDEX, LED_WHITE_INDEX, 255);
+          ledFade(LED_INSIDE_INDEX, LED_WHITE_INDEX, 0, 1000);
+        }
+        break;
+
+      case ANIM_STAGE_6:
+        // END: LEDs/Smoke stops, motor runs slowly to make sure it closes the lid
+
+        if (currAnimationTime > 11500) {
+          ledsOff(0);
+          digitalWrite(SMOKE_PIN, LOW);
+          // ledcWrite(MOTOR_PWM_CHANNEL, 0);
+          ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_SLOW_SPEED);
+          currentState = ANIM_STAGE_7;
+        }
+        break;
+
+      case ANIM_STAGE_7:
+        // Run motor until lid is closed
+        // DEBUG_PRINTLN(isLidClosed());
+        // DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
+        // TODO: ledcRead not working in sim?
+        // if (isLidClosed() && ledcRead(MOTOR_PWM_CHANNEL) > 0) {
+        if (isLidClosed()) {
+          ledcWrite(MOTOR_PWM_CHANNEL, 0);
+        }
+
+        if (currAnimationTime > 16700) {
+          ledcWrite(MOTOR_PWM_CHANNEL, 0);  // Make sure motor stops even if lid not detecting closed
+          currentState = ANIM_STAGE_8;
+        }
+        break;
+
+      case ANIM_STAGE_8:
+        // TODO: Little red flickers
+
+        if (currAnimationTime > 18700) {
+          currentState = ANIM_STAGE_9;
+        }
+        break;
+
+      case ANIM_STAGE_9:
+        // Wait
+        if (currAnimationTime > ACTIVATION_TRACK_LENGTH) {
+          currentState = ANIM_STANDBY_INIT;
+        }
         break;
     }
-
-    // if (lidOpen()) {
-    //   ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_SLOW_SPEED);
-    // } else {
-    //   ledcWrite(MOTOR_PWM_CHANNEL, 0);
-    // }
-
-    // TODO: white inside?
-    // ledSet(LED_INSIDE_INDEX, LED_WHITE_INDEX, random(255));
-    
-    // ledcWrite(MOTOR_PWM_CHANNEL, 0);
-
-    // ledSet(LED_FRONT_INDEX, LED_RED_INDEX, 100);
-    // ledSet(LED_FRONT_INDEX, LED_WHITE_INDEX, 200);
-    // FastLED.show();
-    // delay(500);
-    
-    // ledSet(LED_FRONT_INDEX, LED_RED_INDEX, 0);
-    // ledSet(LED_FRONT_INDEX, LED_WHITE_INDEX, 100);
-
-    // ledcWrite(MOTOR_PWM_CHANNEL, 1024);
-
   }
 
   ledProcessFades();

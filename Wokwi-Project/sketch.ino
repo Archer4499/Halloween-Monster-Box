@@ -317,16 +317,14 @@ void playStandbyTrack() {
   if (audioInit) {
     DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
     DF1201S.playSpecFile(STANDBY_TRACK);
-    // Maybe needs this start command?
-    // DF1201S.start();
+    DF1201S.start();
   }
 }
 void playActivationTrack() {
   if (audioInit) {
     DF1201S.setPlayMode(DF1201S.SINGLE);
     DF1201S.playSpecFile(ACTIVATION_TRACK);
-    // Maybe needs this start command?
-    // DF1201S.start();
+    DF1201S.start();
   }
 }
 

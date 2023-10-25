@@ -125,8 +125,8 @@
 
 // WIZMOTE_BUTTON_ONE          Auto (PIR activation)
 // WIZMOTE_BUTTON_TWO          Random activation
-// WIZMOTE_BUTTON_THREE        Trigger smoke
-// WIZMOTE_BUTTON_FOUR         Trigger activation
+// WIZMOTE_BUTTON_THREE        Trigger activation
+// WIZMOTE_BUTTON_FOUR         Trigger smoke
 
 // WIZMOTE_BUTTON_BRIGHT_UP    Volume up   (Or Led brightness)
 // WIZMOTE_BUTTON_BRIGHT_DOWN  Volume down (Or Led brightness)
@@ -190,6 +190,11 @@
 #include <FastLED.h>
 #include <HardwareSerial.h>
 #include <DFRobot_DF1201S.h>
+
+#ifdef WIZMOTE
+  #include <WiFi.h>
+  #include <esp_now.h>
+#endif
 ////
 
 // Constants / Globals
@@ -202,6 +207,41 @@
 #endif
 
 #define MOTOR_PWM_CHANNEL 0    // Only matters if using other PWM channels as well
+
+
+#ifdef WIZMOTE
+  #define WIZMOTE_BUTTON_ON          1
+  #define WIZMOTE_BUTTON_OFF         2
+  #define WIZMOTE_BUTTON_NIGHT       3
+  #define WIZMOTE_BUTTON_ONE         16
+  #define WIZMOTE_BUTTON_TWO         17
+  #define WIZMOTE_BUTTON_THREE       18
+  #define WIZMOTE_BUTTON_FOUR        19
+  #define WIZMOTE_BUTTON_BRIGHT_UP   9
+  #define WIZMOTE_BUTTON_BRIGHT_DOWN 8
+
+  #define WIFI_CHANNEL 13  // Integer: 1-14. Change if experiencing interference
+
+  // Pulled from the WiZmote product spec.
+  typedef struct message_structure {
+    uint8_t program;      // 0x91 for ON button, 0x81 for all others
+    uint8_t seq[4];       // Incremetal sequence number 32 bit unsigned integer LSB first
+    uint8_t byte5 = 32;   // Unknown
+    uint8_t button;       // Identifies which button is being pressed
+    uint8_t byte8 = 1;    // Unknown, but always 0x01
+    uint8_t byte9 = 100;  // Unnkown, but always 0x64
+
+    uint8_t byte10;  // Unknown, maybe checksum
+    uint8_t byte11;  // Unknown, maybe checksum
+    uint8_t byte12;  // Unknown, maybe checksum
+    uint8_t byte13;  // Unknown, maybe checksum
+  } message_structure;
+
+  static message_structure incoming;
+  char linked_remote[13]   = "";
+  char last_signal_src[13] = "";
+  static uint32_t last_seq = UINT32_MAX;
+#endif
 
 
 enum ActivationMode {
@@ -299,6 +339,56 @@ void IRAM_ATTR modeButton4Interrupt() {
   }
 }
 
+
+#ifdef WIZMOTE
+  // Callback function that will be executed when ESP-NOW data is received
+  void wizmoteDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+    if (len != sizeof(incoming)) {
+      DEBUG_PRINT("Unknown incoming ESP Now message received of length ");
+      DEBUG_PRINTLN(len);
+      return;
+    }
+
+    memcpy(&(incoming.program), incomingData, sizeof(incoming));
+
+    // Reject duplicate messages  
+    uint32_t cur_seq = incoming.seq[0] | (incoming.seq[1] << 8) | (incoming.seq[2] << 16) | (incoming.seq[3] << 24);
+    if (cur_seq == last_seq) {
+      DEBUG_PRINT("ESP Now Duplicate Message Received with sequence number: ");
+      DEBUG_PRINTLN(cur_seq);
+      return;
+    }
+
+    sprintf(last_signal_src, "%02x%02x%02x%02x%02x%02x",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    if (strcmp(last_signal_src, linked_remote) != 0) {
+      DEBUG_PRINT("ESP Now Message Received from Unlinked Sender: ");
+      // TODO: learn code if button sequence, maybe when the moon key is pressed 5 times within x sec?
+      DEBUG_PRINTLN(last_signal_src);
+      return;
+    }
+
+    DEBUG_PRINT("Incoming ESP Now Packet["); DEBUG_PRINT(cur_seq);
+    DEBUG_PRINT("] from sender[");   DEBUG_PRINT(last_signal_src);
+    DEBUG_PRINT("] button: ");     DEBUG_PRINTLN(incoming.button);
+    switch (incoming.button) {
+      case WIZMOTE_BUTTON_ON             : newMode = MODE_AUTO;       modeLed = CRGB::Green; break;  // TODO: maybe return to last on mode?
+      case WIZMOTE_BUTTON_OFF            : newMode = MODE_STOP;       modeLed = CRGB::Red;   break;
+      case WIZMOTE_BUTTON_NIGHT          : newMode = MODE_GROWL_ONLY; modeLed = CRGB::Blue;  break;
+      case WIZMOTE_BUTTON_ONE            : newMode = MODE_AUTO;       modeLed = CRGB::Green; break;
+      case WIZMOTE_BUTTON_TWO            : newMode = MODE_RANDOM;     modeLed = CRGB::White; break;
+      case WIZMOTE_BUTTON_THREE          : if(currentState == ANIM_STANDBY) currentState = ANIM_STAGE_0;  break;
+      case WIZMOTE_BUTTON_FOUR           : break;  // TODO: activate smoke for SMOKE_TIME_REMOTE time
+      case WIZMOTE_BUTTON_BRIGHT_UP      : audioVolumeChange(5);  break;
+      case WIZMOTE_BUTTON_BRIGHT_DOWN    : audioVolumeChange(-5); break;
+    }
+
+    last_seq = cur_seq;
+  }
+#endif
+
+
 bool isLidClosed() {
   return (digitalRead(LID_PIN) == LOW);
 }
@@ -329,6 +419,16 @@ bool audioStop() {
     }
   }
   return true;
+}
+void audioVolumeChange(int8_t change) {
+  if (audioInit) {
+    int8_t volume = (int8_t)DF1201S.getVol();
+    volume += change;
+    if (volume < 0)  volume = 0;
+    if (volume > 30) volume = 30;
+    if (!DF1201S.setVol(volume))
+      DEBUG_PRINTLN("Failed to set audio volume");
+  }
 }
 
 bool ledCurrentlyFading(int boardIndex) {
@@ -487,6 +587,16 @@ void setup() {
   } else {
     DEBUG_PRINTLN("Audio init failed, please check audio wire connection");
   }
+#endif
+
+  // WiZmote
+#ifdef WIZMOTE
+  // Set station mode, though we won't be connecting to another AP
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != 0) {
+    DEBUG_PRINTLN("Error initializing ESP-NOW");
+  }
+  esp_now_register_recv_cb(wizmoteDataRecv);
 #endif
 
   // LEDs
@@ -652,6 +762,11 @@ void loop() {
         }
 
         if (currAnimationTime > 16000) {
+          DEBUG_PRINT("Lid closed: ");
+          DEBUG_PRINT(isLidClosed());
+          DEBUG_PRINT("Current motor PWM: ");
+          DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
+
           ledcWrite(MOTOR_PWM_CHANNEL, 0);  // Make sure motor stops even if lid not detecting closed
           currentState = ANIM_STAGE_8;
         }

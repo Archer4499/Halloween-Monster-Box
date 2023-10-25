@@ -271,45 +271,34 @@ void IRAM_ATTR PIRInterrupt() {
 void IRAM_ATTR modeButton1Interrupt() {
   if (millis() - lastButton1Press > DEBOUNCE_DELAY) {
     lastButton1Press = millis();
+    modeLed = CRGB::Red;
     newMode = MODE_STOP;
   }
 }
 void IRAM_ATTR modeButton2Interrupt() {
   if (millis() - lastButton2Press > DEBOUNCE_DELAY) {
     lastButton2Press = millis();
+    modeLed = CRGB::Green;
     newMode = MODE_AUTO;
   }
 }
 void IRAM_ATTR modeButton3Interrupt() {
   if (millis() - lastButton3Press > DEBOUNCE_DELAY) {
     lastButton3Press = millis();
+    modeLed = CRGB::White;
     newMode = MODE_RANDOM;
   }
 }
 void IRAM_ATTR modeButton4Interrupt() {
   if (millis() - lastButton4Press > DEBOUNCE_DELAY) {
     lastButton4Press = millis();
+    modeLed = CRGB::Blue;
     newMode = MODE_GROWL_ONLY;
   }
 }
 
 bool isLidClosed() {
   return (digitalRead(LID_PIN) == LOW);
-}
-
-ActivationMode readMode() {
-  ActivationMode result = MODE_AUTO;
-
-  if (digitalRead(MODE_PIN_1) == LOW) {
-    result = MODE_STOP;
-  } else if (digitalRead(MODE_PIN_2) == LOW) {
-    result = MODE_AUTO;
-  } else if (digitalRead(MODE_PIN_3) == LOW) {
-    result = MODE_RANDOM;
-  } else if (digitalRead(MODE_PIN_4) == LOW) {
-    result = MODE_GROWL_ONLY;
-  }
-  return result;
 }
 
 void playStandbyTrack() {

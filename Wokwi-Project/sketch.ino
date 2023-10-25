@@ -35,27 +35,27 @@
 //  Stage 6 (10.5s-11.5s):
 //   Internal white to full then fade out
 //   Everything stops
-//  Stage 7 (11.5s-16.7):
+//  Stage 7 (11.5s-16s):
 //   Run motor slowly until lid is closed then wait
-//  Stage 8 (16.7s-18.7s):
+//  Stage 8 (16s-18s):
 //   Little red flickers
 //   TODO: Maybe motor movement?
-//  Stage 9 (18.7s-Audio end (19.632s)):
+//  Stage 9 (18s-Audio end (19.632s)):
 //   Wait then switch back to standby
 
 
 // TODO:
 //
-// Pushbuttons for the mode select (with debounce)
-// Change order of buttons stop(red)|auto(green)|random activation (white)|growl only(blue)
 // LED to show the mode status
+// Upload audio files to github
 // 
 
 
 ////////    Config    ////////
 
 //// Constants/Settings ////
-#define DEBUG    // Print debug lines to serial, comment out to disable
+#define DEBUG  // Print debug lines to serial, comment out to disable
+// #define WOKWI  // Uncomment if running in the Wokwi simulator (Changes LED output method)
 
 #define LOOP_TIME      20   // Time in milliseconds between animation loops
 #define DEBOUNCE_DELAY 300  // Time in milliseconds a button double press will be ignored
@@ -85,9 +85,11 @@
 #define AUDIO_VOLUME 15        // Integer: 0-30
 // Audio tracks can by any of MP3, WAV, WMA, FLAC, AAC, APE formats
 // Stored on the DFPlayer Pro from its USB port
-#define ACTIVATION_TRACK        "/02.mp3"
 #define ACTIVATION_TRACK_LENGTH 19632  // Length in ms of the activation audio file
+#define ACTIVATION_TRACK        "/02.mp3"
 #define STANDBY_TRACK           "/01.mp3"
+#define BLANK_TRACK             "/03.mp3"
+
 // LEDs
 #define GAMMA_CORRECT        // Gamma correction on the birghtness of all LEDs, comment out to disable
 #define NUM_LED_BOARDS 2
@@ -120,9 +122,9 @@
 // WIZMOTE_BUTTON_ON           On
 // WIZMOTE_BUTTON_OFF          Off
 // WIZMOTE_BUTTON_NIGHT        Disable Activation (OnlyGrowl)
+
 // WIZMOTE_BUTTON_ONE          Auto (PIR activation)
 // WIZMOTE_BUTTON_TWO          Random activation
-//  These two aren't intuitive:
 // WIZMOTE_BUTTON_THREE        Trigger smoke
 // WIZMOTE_BUTTON_FOUR         Trigger activation
 
@@ -150,9 +152,9 @@
 // Inputs:
 //   Digital In Pullup    - Mode buttons
 #define MODE_PIN_1 27  // Stop
-#define MODE_PIN_2 26  // Auto
-#define MODE_PIN_3 25  // Random
-#define MODE_PIN_4 14  // Growl only
+#define MODE_PIN_2 14  // Auto
+#define MODE_PIN_3 26  // Random
+#define MODE_PIN_4 25  // Growl only
 
 //   Digital In Interrupt - PIR sensor
 #define PIR_PIN    13
@@ -301,19 +303,32 @@ bool isLidClosed() {
   return (digitalRead(LID_PIN) == LOW);
 }
 
-void playStandbyTrack() {
+void audioPlayStandbyTrack() {
   if (audioInit) {
-    DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
-    DF1201S.playSpecFile(STANDBY_TRACK);
-    DF1201S.start();
+    if (!DF1201S.setPlayMode(DF1201S.SINGLECYCLE))
+      DEBUG_PRINTLN("Failed to set play mode: repeat, before standby");
+    if (!DF1201S.playSpecFile(STANDBY_TRACK))
+      DEBUG_PRINTLN("Failed to play standby track");
   }
 }
-void playActivationTrack() {
+void audioPlayActivationTrack() {
   if (audioInit) {
-    DF1201S.setPlayMode(DF1201S.SINGLE);
-    DF1201S.playSpecFile(ACTIVATION_TRACK);
-    DF1201S.start();
+    if (!DF1201S.setPlayMode(DF1201S.SINGLE))
+      DEBUG_PRINTLN("Failed to set play mode: single, before activation");
+    if (!DF1201S.playSpecFile(ACTIVATION_TRACK))
+      DEBUG_PRINTLN("Failed to play activation track");
   }
+}
+bool audioStop() {
+  if (audioInit) {
+    if (!DF1201S.setPlayMode(DF1201S.SINGLECYCLE))
+      DEBUG_PRINTLN("Failed to set play mode: repeat, before stopping");
+    if (!DF1201S.playSpecFile(BLANK_TRACK)) {
+      DEBUG_PRINTLN("Failed to stop audio by playing blank track");
+      return false;
+    }
+  }
+  return true;
 }
 
 bool ledCurrentlyFading(int boardIndex) {
@@ -462,19 +477,27 @@ void setup() {
     audioInit = true;
 
     DF1201S.setPrompt(false);  // Make sure the automatic startup audio prompt is disabled
-    DF1201S.setVol(AUDIO_VOLUME);
-    DF1201S.switchFunction(DF1201S.MUSIC);
+    if (!DF1201S.setVol(AUDIO_VOLUME))
+      DEBUG_PRINTLN("Failed to set audio volume");
+    if (!DF1201S.switchFunction(DF1201S.MUSIC))
+      DEBUG_PRINTLN("Failed to set music mode");
+
+    while(!audioStop()) delay(200); // TODO: needed?
+    delay(200);  // Let the audio module start fully?
   } else {
     DEBUG_PRINTLN("Audio init failed, please check audio wire connection");
   }
 #endif
 
   // LEDs
+#ifdef WOKWI
+  FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
+#else
   // TODO: This makes the program get stuck somewhere
   // FastLED.addLeds<NEOPIXEL, MODE_LED_PIN>(&modeLed, 1);
 
-  // FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
   FastLED.addLeds<P9813, LED_DATA_PIN, LED_CLK_PIN>(leds, NUM_LED_BOARDS);
+#endif
 }
 
 
@@ -496,12 +519,8 @@ void loop() {
       // TODO: possibly move motor until lid is closed first
       ledcWrite(MOTOR_PWM_CHANNEL, 0);
 
-      // Stop Audio
-      if (audioInit) {
-        DF1201S.pause();
-      }
+      audioStop();
 
-      // Turn off LEDs
       ledsOff(1000);
     }
   }
@@ -512,9 +531,9 @@ void loop() {
 
     switch(currentState) {
       case ANIM_STANDBY_INIT:
-        playStandbyTrack();
         ledFade(LED_FRONT_INDEX, LED_RED_INDEX, GLOW_RED_BRIGHTNESS, 500);
         ledFade(LED_FRONT_INDEX, LED_WHITE_INDEX, CANDLE_BRIGHTNESS, 500);
+        audioPlayStandbyTrack();
 
         lastStandbyTime = millis();
         currentState = ANIM_STANDBY;
@@ -534,8 +553,8 @@ void loop() {
         break;
 
       case ANIM_STAGE_0:
-        playActivationTrack();
         ledsOff(0);
+        audioPlayActivationTrack();
 
         activationTime = millis();
 
@@ -632,7 +651,7 @@ void loop() {
           ledcWrite(MOTOR_PWM_CHANNEL, 0);
         }
 
-        if (currAnimationTime > 16700) {
+        if (currAnimationTime > 16000) {
           ledcWrite(MOTOR_PWM_CHANNEL, 0);  // Make sure motor stops even if lid not detecting closed
           currentState = ANIM_STAGE_8;
         }
@@ -642,7 +661,7 @@ void loop() {
         // TODO: Little red flickers
         ledCandleFlicker(LED_INSIDE_INDEX, LED_RED_INDEX);
 
-        if (currAnimationTime > 18700) {
+        if (currAnimationTime > 18000) {
           currentState = ANIM_STAGE_9;
         }
         break;

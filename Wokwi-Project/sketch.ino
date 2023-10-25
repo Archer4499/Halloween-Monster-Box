@@ -57,8 +57,8 @@
 //// Constants/Settings ////
 #define DEBUG    // Print debug lines to serial, comment out to disable
 
-#define LOOP_TIME      20  // Time in milliseconds between animation loops
-#define DEBOUNCE_DELAY 100  // Time in milliseconds a button double press will be ignored
+#define LOOP_TIME      20   // Time in milliseconds between animation loops
+#define DEBOUNCE_DELAY 300  // Time in milliseconds a button double press will be ignored
 
 // Random Mode
 #define RANDOM_START_MIN 100000  // Minimum time before random mode could activate
@@ -85,16 +85,15 @@
 #define AUDIO_VOLUME 15        // Integer: 0-30
 // Audio tracks can by any of MP3, WAV, WMA, FLAC, AAC, APE formats
 // Stored on the DFPlayer Pro from its USB port
-#define ACTIVATION_TRACK "activation_track.wav"
+#define ACTIVATION_TRACK        "/02.mp3"
 #define ACTIVATION_TRACK_LENGTH 19632  // Length in ms of the activation audio file
-#define STANDBY_TRACK "standby_track.wav"
-
+#define STANDBY_TRACK           "/01.mp3"
 // LEDs
 #define GAMMA_CORRECT        // Gamma correction on the birghtness of all LEDs, comment out to disable
 #define NUM_LED_BOARDS 2
 // Order of the LED boards
-#define LED_FRONT_INDEX  0
-#define LED_INSIDE_INDEX 1
+#define LED_INSIDE_INDEX 0
+#define LED_FRONT_INDEX  1
 // Order of the strip wiring to the RGB on each board
 #define LED_RED_INDEX   0
 #define LED_WHITE_INDEX 1
@@ -113,7 +112,7 @@
 #define BREATHING_MAX       PERCENT(70)
 #define BREATHING_INTERVAL  5000
 
-#define STROBE_MAX          PERCENT(80)
+#define STROBE_MAX          PERCENT(90)
 
 // Remote
 // #define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
@@ -153,7 +152,7 @@
 #define MODE_PIN_1 27  // Stop
 #define MODE_PIN_2 26  // Auto
 #define MODE_PIN_3 25  // Random
-#define MODE_PIN_4 33  // Growl only
+#define MODE_PIN_4 14  // Growl only
 
 //   Digital In Interrupt - PIR sensor
 #define PIR_PIN    13

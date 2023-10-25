@@ -461,12 +461,9 @@ void setup() {
   if (DF1201S.begin(DF1201SSerial)) {
     audioInit = true;
 
+    DF1201S.setPrompt(false);  // Make sure the automatic startup audio prompt is disabled
     DF1201S.setVol(AUDIO_VOLUME);
     DF1201S.switchFunction(DF1201S.MUSIC);
-    // Not sure what it means by the prompt tone from its example?:
-    // /*Wait for the end of the prompt tone */
-    // delay(2000);
-    // DF1201S.setPlayMode(DF1201S.SINGLECYCLE);
   } else {
     DEBUG_PRINTLN("Audio init failed, please check audio wire connection");
   }

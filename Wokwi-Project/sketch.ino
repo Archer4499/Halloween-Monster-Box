@@ -105,14 +105,14 @@
 // LED Effects
 #define GLOW_RED_BRIGHTNESS PERCENT(30)
 
-#define CANDLE_BRIGHTNESS   PERCENT(70)
-#define CANDLE_INTERVAL     400
+#define CANDLE_BRIGHTNESS   PERCENT(40)
+#define CANDLE_INTERVAL     200
 #define CANDLE_INTENSITY    0.07f
 #define CANDLE_ALPHA        PERCENT(90)
 
 #define BREATHING_MIN       PERCENT(30)
 #define BREATHING_MAX       PERCENT(70)
-#define BREATHING_INTERVAL  5000
+#define BREATHING_INTERVAL  3000
 
 #define STROBE_MAX          PERCENT(90)
 
@@ -556,7 +556,7 @@ void setup() {
   pinMode(MODE_PIN_4, INPUT_PULLUP);
   attachInterrupt(MODE_PIN_4, modeButton4Interrupt, RISING);
   // PIR sensor
-  pinMode(PIR_PIN, INPUT);
+  pinMode(PIR_PIN, INPUT_PULLDOWN);
   attachInterrupt(PIR_PIN, PIRInterrupt, RISING);
   // Lid switch
   pinMode(LID_PIN, INPUT_PULLUP);

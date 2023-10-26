@@ -71,16 +71,6 @@
 #define SMOKE_DURATION 2500  // Duration in ms of the smoke to run during an activation
 
 // Motor
-// PWM Frequency/Bit Depth/Steps
-// 1220Hz   16  65536
-// 2441Hz   15  32768
-// 4882Hz   14  16384
-// 9765Hz   13  8192
-// 19531Hz  12  4096
-// The code is using a bit depth of 10
-// Not sure what frequency is best for the motor, 16-20kHz is claimed to reduce noise, but it might not handle high frequencies and the mosfet might run hot
-#define MOTOR_PWM_FREQ       16000
-#define MOTOR_NORMAL_SPEED   1023  // Integer 0-1023
 #define MOTOR_PULSE_INTERVAL 400   // Time in ms of and between each pulse when making sure the lid is closed
 #define MOTOR_DURATION       7300  // Duration in ms of the motor to run during an activation
 
@@ -173,7 +163,7 @@
 //   Digital Out - Smoke machine
 #define SMOKE_PIN    21
 
-//   PWM         - Motor
+//   Digital Out - Motor
 #define MOTOR_PIN    22
 
 //   UART        - Audio
@@ -209,9 +199,6 @@
   #define DEBUG_PRINT(x)
   #define DEBUG_PRINTLN(x) 
 #endif
-
-#define MOTOR_PWM_CHANNEL 0    // Only matters if using other PWM channels as well
-
 
 #ifdef WIZMOTE
   #define WIZMOTE_BUTTON_ON          1
@@ -428,19 +415,12 @@ void motorProcess() {
         motorRun(MOTOR_PULSE_INTERVAL);
       }
     }
-    ledcWrite(MOTOR_PWM_CHANNEL, 0);  // Stop
+    digitalWrite(MOTOR_PIN, LOW);  // Stop
     return;
   }
 
   // Else we should be running
-  ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_NORMAL_SPEED);  // Start
-
-  // TODO: ledcRead not working in sim? Testing for Stage 7
-  // DEBUG_PRINT("Lid closed?: ");
-  // DEBUG_PRINT(isLidClosed());
-  // DEBUG_PRINT(" Current motor PWM: ");
-  // DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
-
+  digitalWrite(MOTOR_PIN, HIGH);   // Start
 }
 
 void smokeRun(long duration) {
@@ -628,9 +608,6 @@ void setup() {
   pinMode(SMOKE_PIN, OUTPUT);
   // Motor
   pinMode(MOTOR_PIN, OUTPUT);
-  ledcSetup(MOTOR_PWM_CHANNEL, MOTOR_PWM_FREQ, 10);
-  ledcWrite(MOTOR_PWM_CHANNEL, 0);  // Make sure 0% PWM output to start with
-  ledcAttachPin(MOTOR_PIN, MOTOR_PWM_CHANNEL);
 
   // Audio
 #ifdef AUDIO

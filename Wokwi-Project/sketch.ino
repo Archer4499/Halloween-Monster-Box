@@ -71,12 +71,13 @@
 #define SMOKE_DURATION 2500  // Duration in ms of the smoke to run during an activation
 
 // Motor
-#define MOTOR_PULSE_INTERVAL 400   // Time in ms of and between each pulse when making sure the lid is closed
+#define MOTOR_PULSE_DURATION 200   // Time in ms of each pulse when making sure the lid is closed
+#define MOTOR_PULSE_INTERVAL 600   // Time in ms between each pulse when making sure the lid is closed
 #define MOTOR_DURATION       7300  // Duration in ms of the motor to run during an activation
 
 // Audio
 #define AUDIO                  // Enable the DFPlayer Pro audio player, comment out to disable
-#define AUDIO_VOLUME 15        // Integer: 0-30
+#define AUDIO_VOLUME 25        // Integer: 0-30
 // Audio tracks can by any of MP3, WAV, WMA, FLAC, AAC, APE formats
 // Stored on the DFPlayer Pro from its USB port
 #define ACTIVATION_TRACK_LENGTH 19632  // Length in ms of the activation audio file
@@ -376,9 +377,9 @@ void IRAM_ATTR modeButton4Interrupt() {
       case WIZMOTE_BUTTON_ONE            : newMode = MODE_AUTO;       modeLed = CRGB::Green; break;
       case WIZMOTE_BUTTON_TWO            : newMode = MODE_RANDOM;     modeLed = CRGB::White; break;
       case WIZMOTE_BUTTON_THREE          : if(currentState == ANIM_STANDBY) currentState = ANIM_STAGE_0;  break;
-      case WIZMOTE_BUTTON_FOUR           : break;  // TODO: activate smoke for SMOKE_TIME_REMOTE time
-      case WIZMOTE_BUTTON_BRIGHT_UP      : audioVolumeChange(5);  break;
-      case WIZMOTE_BUTTON_BRIGHT_DOWN    : audioVolumeChange(-5); break;
+      case WIZMOTE_BUTTON_FOUR           : smokeRun(SMOKE_DURATION); break;
+      case WIZMOTE_BUTTON_BRIGHT_UP      : audioVolumeChange(2);     break;
+      case WIZMOTE_BUTTON_BRIGHT_DOWN    : audioVolumeChange(-2);    break;
     }
 
     last_seq = cur_seq;
@@ -412,7 +413,7 @@ void motorProcess() {
     // Pulse the motor until it is closed if we aren't in stop mode
     if (currDuration >= (motorDuration + MOTOR_PULSE_INTERVAL)) {
       if (currentMode != MODE_STOP && !isLidClosed()) {
-        motorRun(MOTOR_PULSE_INTERVAL);
+        motorRun(MOTOR_PULSE_DURATION);
       }
     }
     digitalWrite(MOTOR_PIN, LOW);  // Stop

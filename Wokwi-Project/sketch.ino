@@ -67,6 +67,9 @@
 // Auto/PIR
 #define AUTO_ACTIVATION_COOLDOWN 10000  // Cooldown after activation finishes before the PIR will trigger another actiavtion
 
+// Smoke
+#define SMOKE_DURATION 2500  // Duration in ms of the smoke to run during an activation
+
 // Motor
 // PWM Frequency/Bit Depth/Steps
 // 1220Hz   16  65536
@@ -76,9 +79,10 @@
 // 19531Hz  12  4096
 // The code is using a bit depth of 10
 // Not sure what frequency is best for the motor, 16-20kHz is claimed to reduce noise, but it might not handle high frequencies and the mosfet might run hot
-#define MOTOR_PWM_FREQ     16000
-#define MOTOR_NORMAL_SPEED 4095  // Integer 0-4095
-#define MOTOR_SLOW_SPEED   3000  // Integer 0-4095
+#define MOTOR_PWM_FREQ       16000
+#define MOTOR_NORMAL_SPEED   1023  // Integer 0-1023
+#define MOTOR_PULSE_INTERVAL 400   // Time in ms of and between each pulse when making sure the lid is closed
+#define MOTOR_DURATION       7300  // Duration in ms of the motor to run during an activation
 
 // Audio
 #define AUDIO                  // Enable the DFPlayer Pro audio player, comment out to disable
@@ -91,27 +95,27 @@
 #define BLANK_TRACK             "/03.mp3"
 
 // LEDs
-#define GAMMA_CORRECT        // Gamma correction on the birghtness of all LEDs, comment out to disable
-#define NUM_LED_BOARDS 2
+#define GAMMA_CORRECT  // Gamma correction on the birghtness of all LEDs, comment out to disable
+#define NUM_LED_BOARDS   2
 // Order of the LED boards
 #define LED_INSIDE_INDEX 0
 #define LED_FRONT_INDEX  1
 // Order of the strip wiring to the RGB on each board
-#define LED_RED_INDEX   0
-#define LED_WHITE_INDEX 1
+#define LED_RED_INDEX    0
+#define LED_WHITE_INDEX  1
 
 #define PERCENT(x) static_cast<uint8_t>(x * 255/100)  // Allows using PERCENT(x) to change a brightness from 0-100 into 0-255
 
 // LED Effects
 #define GLOW_RED_BRIGHTNESS PERCENT(30)
 
-#define CANDLE_BRIGHTNESS   PERCENT(40)
+#define CANDLE_BRIGHTNESS   PERCENT(30)
 #define CANDLE_INTERVAL     200
-#define CANDLE_INTENSITY    0.07f
+#define CANDLE_INTENSITY    0.12f
 #define CANDLE_ALPHA        PERCENT(90)
 
 #define BREATHING_MIN       PERCENT(30)
-#define BREATHING_MAX       PERCENT(70)
+#define BREATHING_MAX       PERCENT(80)
 #define BREATHING_INTERVAL  3000
 
 #define STROBE_MAX          PERCENT(90)
@@ -281,6 +285,12 @@ long activationTime = 0;
 long randomStartTime = random(RANDOM_START_MIN, RANDOM_START_MAX);
 long lastStandbyTime = 0;
 
+long smokeStartTime = 0;
+long smokeDuration  = 0;
+
+long motorStartTime = 0;
+long motorDuration  = 0;
+
 // Audio
 HardwareSerial DF1201SSerial(2);
 DFRobot_DF1201S DF1201S;
@@ -392,6 +402,58 @@ void IRAM_ATTR modeButton4Interrupt() {
 bool isLidClosed() {
   return (digitalRead(LID_PIN) == LOW);
 }
+
+void smokeProcess() {
+  long currTime = millis();
+  long currDuration = currTime - smokeStartTime;
+
+  // Instant animation or finished animation
+  if (smokeDuration == 0 || currDuration >= smokeDuration) {
+    digitalWrite(SMOKE_PIN, LOW);  // Stop
+    return;
+  }
+
+  // Else we should be running
+  digitalWrite(SMOKE_PIN, HIGH);   // Start
+}
+void motorProcess() {
+  long currTime = millis();
+  long currDuration = currTime - motorStartTime;
+
+  // Instant animation or finished animation
+  if (motorDuration == 0 || currDuration >= motorDuration) {
+    // Pulse the motor until it is closed if we aren't in stop mode
+    if (currDuration >= (motorDuration + MOTOR_PULSE_INTERVAL)) {
+      if (currentMode != MODE_STOP && !isLidClosed()) {
+        motorRun(MOTOR_PULSE_INTERVAL);
+      }
+    }
+    ledcWrite(MOTOR_PWM_CHANNEL, 0);  // Stop
+    return;
+  }
+
+  // Else we should be running
+  ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_NORMAL_SPEED);  // Start
+
+  // TODO: ledcRead not working in sim? Testing for Stage 7
+  // DEBUG_PRINT("Lid closed?: ");
+  // DEBUG_PRINT(isLidClosed());
+  // DEBUG_PRINT(" Current motor PWM: ");
+  // DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
+
+}
+
+void smokeRun(long duration) {
+  smokeStartTime = millis();
+  smokeDuration = duration;
+}
+
+void motorRun(long duration) {
+  motorStartTime = millis();
+  motorDuration = duration;
+}
+
+
 
 void audioPlayStandbyTrack() {
   if (audioInit) {
@@ -623,11 +685,10 @@ void loop() {
 
     if (newMode == MODE_STOP) {
       // Stop Smoke
-      digitalWrite(SMOKE_PIN, LOW);
+      smokeRun(0);
 
       // Stop Motor
-      // TODO: possibly move motor until lid is closed first
-      ledcWrite(MOTOR_PWM_CHANNEL, 0);
+      motorRun(0);
 
       audioStop();
 
@@ -716,8 +777,8 @@ void loop() {
         if (currAnimationTime > 4200) {
           ledSet(LED_INSIDE_INDEX, LED_WHITE_INDEX, 0);  // Cleanup strobe
           currentState = ANIM_STAGE_5;
-          digitalWrite(SMOKE_PIN, HIGH);
-          ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_NORMAL_SPEED);
+          smokeRun(SMOKE_DURATION);
+          motorRun(MOTOR_DURATION);
         }
         break;
 
@@ -736,38 +797,17 @@ void loop() {
         break;
 
       case ANIM_STAGE_6:
-        // END: LEDs/Smoke stops, motor runs slowly to make sure it closes the lid
+        // END: LEDs off, motor runs slowly to make sure it closes the lid
 
         if (currAnimationTime > 11500) {
           ledsOff(0);
-          digitalWrite(SMOKE_PIN, LOW);
-          // ledcWrite(MOTOR_PWM_CHANNEL, 0);
-          ledcWrite(MOTOR_PWM_CHANNEL, MOTOR_SLOW_SPEED);
-
-          // TODO: ledcRead not working in sim? Testing for Stage 7
-          DEBUG_PRINT("Lid closed: ");
-          DEBUG_PRINT(isLidClosed());
-          DEBUG_PRINT("Current motor PWM: ");
-          DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
-          
           currentState = ANIM_STAGE_7;
         }
         break;
 
       case ANIM_STAGE_7:
-        // Run motor until lid is closed
-        // if (isLidClosed() && ledcRead(MOTOR_PWM_CHANNEL) > 0) {
-        if (isLidClosed()) {
-          ledcWrite(MOTOR_PWM_CHANNEL, 0);
-        }
-
-        if (currAnimationTime > 16000) {
-          DEBUG_PRINT("Lid closed: ");
-          DEBUG_PRINT(isLidClosed());
-          DEBUG_PRINT("Current motor PWM: ");
-          DEBUG_PRINTLN(ledcRead(MOTOR_PWM_CHANNEL));
-
-          ledcWrite(MOTOR_PWM_CHANNEL, 0);  // Make sure motor stops even if lid not detecting closed
+        // Wait
+        if (currAnimationTime > 15000) {
           currentState = ANIM_STAGE_8;
         }
         break;
@@ -790,6 +830,8 @@ void loop() {
     }
   }
 
+  smokeProcess();
+  motorProcess();
   ledProcessFades();
   FastLED.show();
   delay(LOOP_TIME);

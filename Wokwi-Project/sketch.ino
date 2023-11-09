@@ -107,6 +107,9 @@
 // Remote
 #define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
                     //  https://www.wizconnected.com/en-us/p/accessory-wizmote/046677603595
+#define REMOTE_LEARNING_BUTTON  WIZMOTE_BUTTON_NIGHT  // Button on the remote to press to learn a new remote
+#define REMOTE_LEARNING_REPEATS 5                     // Number of times to repeat the button press
+#define REMOTE_LEARNING_TIMEOUT 5000                  // Amount of time in ms to finish the required repeats
 // Configured button actions:
 //   Button:      Action:
 //   ON           On (Auto)
@@ -216,7 +219,7 @@
   #define WIZMOTE_BUTTON_BRIGHT_DOWN 8
 
   // Pulled from the WiZmote product spec.
-  typedef struct message_structure {
+  typedef struct messageStructure {
     uint8_t program;      // 0x91 for ON button, 0x81 for all others
     uint8_t seq[4];       // Incremetal sequence number 32 bit unsigned integer LSB first
     uint8_t byte5 = 32;   // Unknown
@@ -228,12 +231,16 @@
     uint8_t byte11;  // Unknown, maybe checksum
     uint8_t byte12;  // Unknown, maybe checksum
     uint8_t byte13;  // Unknown, maybe checksum
-  } message_structure;
+  } messageStructure;
 
-  static message_structure incoming;
-  char linked_remote[13]   = "";
-  char last_signal_src[13] = "";
-  static uint32_t last_seq = UINT32_MAX;
+  static messageStructure incoming;
+  char linkedRemote[13]   = "";
+  char lastSignalSrc[13]  = "";
+  static uint32_t lastSeq = UINT32_MAX;
+
+  char remoteLearningSrc[13]    = "";
+  uint8_t remoteLearningPresses = 0;
+  long remoteLearningStartTime  = 0;
 #endif
 
 
@@ -333,39 +340,61 @@ void IRAM_ATTR modeButton4Interrupt() {
     memcpy(&(incoming.program), incomingData, sizeof(incoming));
 
     // Reject duplicate messages  
-    uint32_t cur_seq = incoming.seq[0] | (incoming.seq[1] << 8) | (incoming.seq[2] << 16) | (incoming.seq[3] << 24);
-    if (cur_seq == last_seq) {
+    uint32_t currSeq = incoming.seq[0] | (incoming.seq[1] << 8) | (incoming.seq[2] << 16) | (incoming.seq[3] << 24);
+    if (currSeq == lastSeq) {
       DEBUG_PRINT("ESP Now Duplicate Message Received with sequence number: ");
-      DEBUG_PRINTLN(cur_seq);
+      DEBUG_PRINTLN(currSeq);
       return;
     }
 
-    sprintf(last_signal_src, "%02x%02x%02x%02x%02x%02x",
+    sprintf(lastSignalSrc, "%02x%02x%02x%02x%02x%02x",
             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    if (strcmp(last_signal_src, linked_remote) != 0) {
+    // Reject unknown remotes, unless we should learn it
+    if (strcmp(lastSignalSrc, linkedRemote) != 0) {
       DEBUG_PRINT("ESP Now Message Received from Unlinked Sender: ");
-      // TODO: learn code if button sequence, maybe when the moon key is pressed 5 times within x sec?
-      DEBUG_PRINTLN(last_signal_src);
+      DEBUG_PRINTLN(lastSignalSrc);
+
+      // Learn a new remote if a button sequence is pressed within a time limit
+      if (incoming.button == REMOTE_LEARNING_BUTTON) {
+        if (strncmp(lastSignalSrc, remoteLearningSrc, 12) != 0 ||            // Different remote
+            millis() - remoteLearningStartTime > REMOTE_LEARNING_TIMEOUT) {  // Timeout reached
+          remoteLearningPresses = 0;
+          strncpy(remoteLearningSrc, lastSignalSrc, 12);
+          remoteLearningStartTime = millis();
+        }
+
+        remoteLearningPresses++;
+        DEBUG_PRINT("Learning remote, button press: ");
+        DEBUG_PRINT(remoteLearningPresses);
+        DEBUG_PRINT(" of ");
+        DEBUG_PRINTLN(REMOTE_LEARNING_REPEATS);
+
+        if (remoteLearningPresses == REMOTE_LEARNING_REPEATS) {
+          strncpy(linkedRemote, remoteLearningSrc, 12);
+          DEBUG_PRINT("Learned new remote: ");
+          DEBUG_PRINTLN(remoteLearningSrc);
+        }
+      }
       return;
     }
 
-    DEBUG_PRINT("Incoming ESP Now Packet["); DEBUG_PRINT(cur_seq);
-    DEBUG_PRINT("] from sender[");   DEBUG_PRINT(last_signal_src);
+    DEBUG_PRINT("Incoming ESP Now Packet["); DEBUG_PRINT(currSeq);
+    DEBUG_PRINT("] from sender[");     DEBUG_PRINT(lastSignalSrc);
     DEBUG_PRINT("] button: ");     DEBUG_PRINTLN(incoming.button);
     switch (incoming.button) {
-      case WIZMOTE_BUTTON_ON             : newMode = MODE_AUTO;       break;  // TODO: maybe return to last on mode?
-      case WIZMOTE_BUTTON_OFF            : newMode = MODE_STOP;       break;
-      case WIZMOTE_BUTTON_NIGHT          : newMode = MODE_GROWL_ONLY; break;
-      case WIZMOTE_BUTTON_ONE            : newMode = MODE_AUTO;       break;
-      case WIZMOTE_BUTTON_TWO            : newMode = MODE_RANDOM;     break;
-      case WIZMOTE_BUTTON_THREE          : if(currentState == ANIM_STANDBY) currentState = ANIM_STAGE_0;  break;
-      case WIZMOTE_BUTTON_FOUR           : smokeRun(SMOKE_DURATION);  break;
-      case WIZMOTE_BUTTON_BRIGHT_UP      : audioVolumeChange(2);      break;
-      case WIZMOTE_BUTTON_BRIGHT_DOWN    : audioVolumeChange(-2);     break;
+      case WIZMOTE_BUTTON_ON          : newMode = MODE_AUTO;       break;  // TODO: maybe return to last on mode?
+      case WIZMOTE_BUTTON_OFF         : newMode = MODE_STOP;       break;
+      case WIZMOTE_BUTTON_NIGHT       : newMode = MODE_GROWL_ONLY; break;
+      case WIZMOTE_BUTTON_ONE         : newMode = MODE_AUTO;       break;
+      case WIZMOTE_BUTTON_TWO         : newMode = MODE_RANDOM;     break;
+      case WIZMOTE_BUTTON_THREE       : if(currentState == ANIM_STANDBY) currentState = ANIM_STAGE_0; break;
+      case WIZMOTE_BUTTON_FOUR        : smokeRun(SMOKE_DURATION);  break;
+      case WIZMOTE_BUTTON_BRIGHT_UP   : audioVolumeChange(2);      break;
+      case WIZMOTE_BUTTON_BRIGHT_DOWN : audioVolumeChange(-2);     break;
     }
 
-    last_seq = cur_seq;
+    lastSeq = currSeq;
   }
 #endif
 

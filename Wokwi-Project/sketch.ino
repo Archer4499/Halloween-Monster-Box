@@ -1,24 +1,25 @@
 // Inputs
 //   Mode buttons - stop|auto|random activation|growl only
 //   PIR sensor
-//   Lid switch (to detect the lid is down)
+//   Lid closed reed switch
+//   WiZmote remote control
 
 // Outputs
 //   Mode LED - stop(red)|auto(green)|random activation (white)|growl only(blue)
-//   Smoke machine
+//   Smoke machine trigger
 //   Motor (to make the lid jump)
-//   Audio trigger - standby track (growling) Activation Track
+//   Audio (Standby track (growling) & activation track)
 //   Front LED strip Red and White (run from a digital led mosfet)
 //   Internal LED strip Red and White (run from a digital led mosfet)
 
-// Standby:
+// Actions during standby:
 //   Audio track loops
 //   Front white leds candle flicker
 //   Front red leds at 30%
 //   Inside red leds "breathe" between 30% and 70% brightness
 //   (might have motor pulse every now and again to move the lid up and down havent decided)
 
-// Activated:
+// Activated process:
 //  Stage 0 (0s):
 //   All lights go dark
 //   Activation track plays
@@ -35,30 +36,22 @@
 //  Stage 6 (10.5s-11.5s):
 //   Internal white to full then fade out
 //   Everything stops
-//  Stage 7 (11.5s-16s):
+//  Stage 7 (11.5s-15s):
 //   Run motor slowly until lid is closed then wait
-//  Stage 8 (16s-18s):
+//  Stage 8 (15s-18s):
 //   Little red flickers
-//   TODO: Maybe motor movement?
 //  Stage 9 (18s-Audio end (19.632s)):
 //   Wait then switch back to standby
-
-
-// TODO:
-//
-// LED to show the mode status
-// Upload audio files to github
-// 
 
 
 ////////    Config    ////////
 
 //// Constants/Settings ////
 #define DEBUG  // Print debug lines to serial, comment out to disable
+// #define DEBUG_INTERRUPT  // Print debug lines for the interrupt functions, this can have major performance issues if buttons bounce too much, comment out to disable
 // #define WOKWI  // Uncomment if running in the Wokwi simulator (Changes LED output method)
 
 #define LOOP_TIME      20   // Time in milliseconds between animation loops
-#define DEBOUNCE_DELAY 300  // Time in milliseconds a button double press will be ignored
 
 // Random Mode
 #define RANDOM_START_MIN 100000  // Minimum time before random mode could activate
@@ -112,19 +105,21 @@
 #define STROBE_MAX          PERCENT(90)
 
 // Remote
-// #define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
+#define WIZMOTE     // Enable the WiZmote ESP-NOW remote control, comment out to disable
                     //  https://www.wizconnected.com/en-us/p/accessory-wizmote/046677603595
-// WIZMOTE_BUTTON_ON           On
-// WIZMOTE_BUTTON_OFF          Off
-// WIZMOTE_BUTTON_NIGHT        Disable Activation (OnlyGrowl)
+// Configured button actions:
+//   Button:      Action:
+//   ON           On (Auto)
+//   OFF          Off
+//   NIGHT        Disable Activation (OnlyGrowl)
 
-// WIZMOTE_BUTTON_ONE          Auto (PIR activation)
-// WIZMOTE_BUTTON_TWO          Random activation
-// WIZMOTE_BUTTON_THREE        Trigger activation
-// WIZMOTE_BUTTON_FOUR         Trigger smoke
+//   ONE          Auto (PIR activation)
+//   TWO          Random activation
+//   THREE        Trigger activation
+//   FOUR         Trigger smoke
 
-// WIZMOTE_BUTTON_BRIGHT_UP    Volume up   (Or Led brightness)
-// WIZMOTE_BUTTON_BRIGHT_DOWN  Volume down (Or Led brightness)
+//   BRIGHT_UP    Volume up   (Or Led brightness)
+//   BRIGHT_DOWN  Volume down (Or Led brightness)
 ////////
 
 //// Pins ////
@@ -138,7 +133,7 @@
 // Alternatively software SPI can be used on any other set of pins
 //
 // Any of the following pins can be used for the rest of the functions:
-// 4   13  18  21  22  23
+//  4  13  18  21  22  23
 // 25  26  27  32  33
 //
 // The following can only be used for input, and have no pullups, so not really recommended:
@@ -181,6 +176,9 @@
 
 ////////    End Config    ////////
 
+
+
+
 // Imports
 #include <FastLED.h>
 #include <HardwareSerial.h>
@@ -200,6 +198,11 @@
   #define DEBUG_PRINT(x)
   #define DEBUG_PRINTLN(x) 
 #endif
+#ifdef DEBUG_INTERRUPT
+  #define DEBUG_INT(x) x
+#else
+  #define DEBUG_INT(x)
+#endif
 
 #ifdef WIZMOTE
   #define WIZMOTE_BUTTON_ON          1
@@ -211,8 +214,6 @@
   #define WIZMOTE_BUTTON_FOUR        19
   #define WIZMOTE_BUTTON_BRIGHT_UP   9
   #define WIZMOTE_BUTTON_BRIGHT_DOWN 8
-
-  #define WIFI_CHANNEL 13  // Integer: 1-14. Change if experiencing interference
 
   // Pulled from the WiZmote product spec.
   typedef struct message_structure {
@@ -244,14 +245,6 @@ enum ActivationMode {
 };
 ActivationMode currentMode  = MODE_AUTO;
 volatile ActivationMode newMode = MODE_AUTO;
-
-// TODO: debouncing probably actually doesn't matter
-//        since we're just setting the newMode, 
-//        which won't do anything if it's already set by that button
-volatile long lastButton1Press = 0;
-volatile long lastButton2Press = 0;
-volatile long lastButton3Press = 0;
-volatile long lastButton4Press = 0;
 
 enum AnimationState {
   ANIM_STANDBY_INIT,
@@ -301,40 +294,30 @@ ledInternal ledsInternal[NUM_LED_BOARDS];
 
 
 void IRAM_ATTR PIRInterrupt() {
+  DEBUG_INT(DEBUG_PRINTLN("PIR"));
   if (currentMode == MODE_AUTO && currentState == ANIM_STANDBY) {
     if (millis() - lastStandbyTime > AUTO_ACTIVATION_COOLDOWN) {
+      DEBUG_PRINTLN("PIR trigger valid");
       currentState = ANIM_STAGE_0;
     }
   }
 }
 
 void IRAM_ATTR modeButton1Interrupt() {
-  if (millis() - lastButton1Press > DEBOUNCE_DELAY) {
-    lastButton1Press = millis();
-    modeLed = CRGB::Red;
-    newMode = MODE_STOP;
-  }
+  DEBUG_INT(DEBUG_PRINTLN("B1"));
+  newMode = MODE_STOP;
 }
 void IRAM_ATTR modeButton2Interrupt() {
-  if (millis() - lastButton2Press > DEBOUNCE_DELAY) {
-    lastButton2Press = millis();
-    modeLed = CRGB::Green;
-    newMode = MODE_AUTO;
-  }
+  DEBUG_INT(DEBUG_PRINTLN("B2"));
+  newMode = MODE_AUTO;
 }
 void IRAM_ATTR modeButton3Interrupt() {
-  if (millis() - lastButton3Press > DEBOUNCE_DELAY) {
-    lastButton3Press = millis();
-    modeLed = CRGB::White;
-    newMode = MODE_RANDOM;
-  }
+  DEBUG_INT(DEBUG_PRINTLN("B3"));
+  newMode = MODE_RANDOM;
 }
 void IRAM_ATTR modeButton4Interrupt() {
-  if (millis() - lastButton4Press > DEBOUNCE_DELAY) {
-    lastButton4Press = millis();
-    modeLed = CRGB::Blue;
-    newMode = MODE_GROWL_ONLY;
-  }
+  DEBUG_INT(DEBUG_PRINTLN("B4"));
+  newMode = MODE_GROWL_ONLY;
 }
 
 
@@ -371,15 +354,15 @@ void IRAM_ATTR modeButton4Interrupt() {
     DEBUG_PRINT("] from sender[");   DEBUG_PRINT(last_signal_src);
     DEBUG_PRINT("] button: ");     DEBUG_PRINTLN(incoming.button);
     switch (incoming.button) {
-      case WIZMOTE_BUTTON_ON             : newMode = MODE_AUTO;       modeLed = CRGB::Green; break;  // TODO: maybe return to last on mode?
-      case WIZMOTE_BUTTON_OFF            : newMode = MODE_STOP;       modeLed = CRGB::Red;   break;
-      case WIZMOTE_BUTTON_NIGHT          : newMode = MODE_GROWL_ONLY; modeLed = CRGB::Blue;  break;
-      case WIZMOTE_BUTTON_ONE            : newMode = MODE_AUTO;       modeLed = CRGB::Green; break;
-      case WIZMOTE_BUTTON_TWO            : newMode = MODE_RANDOM;     modeLed = CRGB::White; break;
+      case WIZMOTE_BUTTON_ON             : newMode = MODE_AUTO;       break;  // TODO: maybe return to last on mode?
+      case WIZMOTE_BUTTON_OFF            : newMode = MODE_STOP;       break;
+      case WIZMOTE_BUTTON_NIGHT          : newMode = MODE_GROWL_ONLY; break;
+      case WIZMOTE_BUTTON_ONE            : newMode = MODE_AUTO;       break;
+      case WIZMOTE_BUTTON_TWO            : newMode = MODE_RANDOM;     break;
       case WIZMOTE_BUTTON_THREE          : if(currentState == ANIM_STANDBY) currentState = ANIM_STAGE_0;  break;
-      case WIZMOTE_BUTTON_FOUR           : smokeRun(SMOKE_DURATION); break;
-      case WIZMOTE_BUTTON_BRIGHT_UP      : audioVolumeChange(2);     break;
-      case WIZMOTE_BUTTON_BRIGHT_DOWN    : audioVolumeChange(-2);    break;
+      case WIZMOTE_BUTTON_FOUR           : smokeRun(SMOKE_DURATION);  break;
+      case WIZMOTE_BUTTON_BRIGHT_UP      : audioVolumeChange(2);      break;
+      case WIZMOTE_BUTTON_BRIGHT_DOWN    : audioVolumeChange(-2);     break;
     }
 
     last_seq = cur_seq;
@@ -435,7 +418,6 @@ void motorRun(long duration) {
 }
 
 
-
 void audioPlayStandbyTrack() {
   if (audioInit) {
     if (!DF1201S.setPlayMode(DF1201S.SINGLECYCLE))
@@ -467,8 +449,7 @@ void audioVolumeChange(int8_t change) {
   if (audioInit) {
     int8_t volume = (int8_t)DF1201S.getVol();
     volume += change;
-    if (volume < 0)  volume = 0;
-    if (volume > 30) volume = 30;
+    volume = constrain(volume, 0, 30);
     if (!DF1201S.setVol(volume))
       DEBUG_PRINTLN("Failed to set audio volume");
   }
@@ -484,13 +465,14 @@ bool ledCurrentlyFading(int boardIndex, int ledIndex) {
 
 void ledCandleFlicker(int boardIndex, int ledIndex) {
   if (!ledCurrentlyFading(boardIndex, ledIndex)) {
-    // ledFade(boardIndex, ledIndex, inoise8(millis()), 200);
-    // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, inoise8(millis())/10);
-    // uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, dim8_video(inoise8(millis())/2));
-    // uint8_t flicker = qadd8(blend8(CANDLE_BRIGHTNESS,
-    //                                ledsInternal[boardIndex].current[ledIndex],
-    //                                CANDLE_ALPHA),
-    //                         dim8_video(inoise8(millis())/3));
+    // Other candle flicker animation attempts:
+    //   uint8_t flicker = inoise8(millis());
+    //   uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, inoise8(millis())/10);
+    //   uint8_t flicker = qadd8(CANDLE_BRIGHTNESS, dim8_video(inoise8(millis())/2));
+    //   uint8_t flicker = qadd8(blend8(CANDLE_BRIGHTNESS,
+    //                                  ledsInternal[boardIndex].current[ledIndex],
+    //                                  CANDLE_ALPHA),
+    //                           dim8_video(inoise8(millis())/3));
     uint8_t starting_blend = blend8(CANDLE_BRIGHTNESS,
                               ledsInternal[boardIndex].current[ledIndex],
                               CANDLE_ALPHA);
@@ -505,6 +487,7 @@ void ledCandleFlicker(int boardIndex, int ledIndex) {
     ledFade(boardIndex, ledIndex, flicker, CANDLE_INTERVAL);
   }
 }
+
 void ledBreathing(int boardIndex, int ledIndex) {
   // TODO: maybe use easing on the breathing
   // TODO: maybe slight pause when dark
@@ -641,10 +624,11 @@ void setup() {
 
   // LEDs
 #ifdef WOKWI
+  // Use neopixel leds instead so that the simulator can show the output
   FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LED_BOARDS);
 #else
-  // TODO: This makes the program get stuck somewhere
-  // FastLED.addLeds<NEOPIXEL, MODE_LED_PIN>(&modeLed, 1);
+  // TODO: This makes the wokwi simulator get stuck in the FastLED.show() function
+  FastLED.addLeds<NEOPIXEL, MODE_LED_PIN>(&modeLed, 1);
 
   FastLED.addLeds<P9813, LED_DATA_PIN, LED_CLK_PIN>(leds, NUM_LED_BOARDS);
 #endif
@@ -656,8 +640,24 @@ void loop() {
   if (newMode != currentMode) {
     // Mode changed, so reset and setup anything the new mode needs
     currentMode = newMode;
-    DEBUG_PRINT("New mode: ");
-    DEBUG_PRINTLN(newMode);
+    switch (newMode) {
+      case MODE_STOP:
+        DEBUG_PRINTLN("New mode: 1 (STOP)");
+        modeLed = CRGB::Red;
+        break;
+      case MODE_AUTO:
+        DEBUG_PRINTLN("New mode: 2 (AUTO)");
+        modeLed = CRGB::Green;
+        break;
+      case MODE_RANDOM:
+        DEBUG_PRINTLN("New mode: 3 (RANDOM)");
+        modeLed = CRGB::White;
+        break;
+      case MODE_GROWL_ONLY:
+        DEBUG_PRINTLN("New mode: 4 (GROWL_ONLY)");
+        modeLed = CRGB::Blue;
+        break;
+    }
 
     currentState = ANIM_STANDBY_INIT;
 
@@ -791,7 +791,7 @@ void loop() {
         break;
 
       case ANIM_STAGE_8:
-        // TODO: Little red flickers
+        // Little red flickers
         ledCandleFlicker(LED_INSIDE_INDEX, LED_RED_INDEX);
 
         if (currAnimationTime > 18000) {
